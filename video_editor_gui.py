@@ -10,7 +10,14 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from processor import FFmpegNotFoundError, VideoProcessingError, list_videos, process_video
+from processor import (
+    VIDEO_EXTENSIONS,
+    FFmpegNotFoundError,
+    VideoProcessingError,
+    list_videos,
+    process_video,
+    trim_video,
+)
 from profiles import PROFILES
 
 
@@ -50,6 +57,12 @@ class VideoEditorApp:
         self.status_var = tk.StringVar(value="Pronto")
         self.overwrite_var = tk.BooleanVar(value=True)
         self.profile_description_var = tk.StringVar(value="")
+        self.trim_input_file_var = tk.StringVar(value="")
+        self.trim_output_dir_var = tk.StringVar(value=str(Path.cwd() / "output"))
+        self.trim_start_seconds_var = tk.StringVar(value="0")
+        self.trim_end_seconds_var = tk.StringVar(value="0")
+        self.trim_overwrite_var = tk.BooleanVar(value=True)
+        self.trim_status_var = tk.StringVar(value="Pronto")
 
         self.profile_items = sorted(PROFILES.values(), key=lambda profile: profile.label.lower())
         self.profile_labels = [profile.label for profile in self.profile_items]
@@ -72,6 +85,9 @@ class VideoEditorApp:
         self.selected_count_var = tk.StringVar(value="Selecionados: 0 / 0")
         self.video_files: list[Path] = []
         self.tree_id_to_path: dict[str, Path] = {}
+        self.trim_window: tk.Toplevel | None = None
+        self.trim_log_text: tk.Text | None = None
+        self.trim_run_button: ttk.Button | None = None
         self._setting_traces_registered = False
 
         loaded_settings = self._load_user_settings()
@@ -229,6 +245,7 @@ class VideoEditorApp:
             label="Criar atalho na area de trabalho",
             command=self.create_desktop_shortcut,
         )
+        arquivo_menu.add_command(label="Abrir modo recorte", command=self.open_trim_mode)
         arquivo_menu.add_separator()
         arquivo_menu.add_command(label="Sair", command=self.root.destroy)
         menu_bar.add_cascade(label="Arquivo", menu=arquivo_menu)
@@ -266,6 +283,33 @@ class VideoEditorApp:
         processamento_menu.add_command(label="Executar selecionados", command=self.run_selected)
         menu_bar.add_cascade(label="Processamento", menu=processamento_menu)
 
+        recorte_menu = tk.Menu(menu_bar, tearoff=0)
+        recorte_menu.add_command(label="Abrir modo recorte", command=self.open_trim_mode)
+        recorte_menu.add_command(
+            label="Selecionar video para recorte",
+            command=self.choose_trim_input_file,
+        )
+        recorte_menu.add_command(
+            label="Usar video selecionado da lista",
+            command=self.use_selected_video_for_trim,
+        )
+        recorte_menu.add_separator()
+        recorte_menu.add_command(
+            label="Selecionar pasta de output do recorte",
+            command=self.choose_trim_output_dir,
+        )
+        recorte_menu.add_command(
+            label="Ver pasta de output do recorte",
+            command=self.open_trim_output_dir,
+        )
+        recorte_menu.add_separator()
+        recorte_menu.add_checkbutton(
+            label="Sobrescrever recorte existente",
+            variable=self.trim_overwrite_var,
+        )
+        recorte_menu.add_command(label="Executar recorte", command=self.run_trim)
+        menu_bar.add_cascade(label="Recorte", menu=recorte_menu)
+
     def _register_setting_traces(self) -> None:
         if self._setting_traces_registered:
             return
@@ -274,6 +318,11 @@ class VideoEditorApp:
         self.overwrite_var.trace_add("write", self._on_setting_var_changed)
         self.profile_menu_var.trace_add("write", self._on_setting_var_changed)
         self.sort_label_var.trace_add("write", self._on_setting_var_changed)
+        self.trim_input_file_var.trace_add("write", self._on_setting_var_changed)
+        self.trim_output_dir_var.trace_add("write", self._on_setting_var_changed)
+        self.trim_start_seconds_var.trace_add("write", self._on_setting_var_changed)
+        self.trim_end_seconds_var.trace_add("write", self._on_setting_var_changed)
+        self.trim_overwrite_var.trace_add("write", self._on_setting_var_changed)
         self._setting_traces_registered = True
 
     def _on_setting_var_changed(self, *_args: object) -> None:
@@ -303,6 +352,11 @@ class VideoEditorApp:
         overwrite = data.get("overwrite")
         profile_key = data.get("profile_key")
         sort_mode = data.get("sort_mode")
+        trim_input_file = data.get("trim_input_file")
+        trim_output_dir = data.get("trim_output_dir")
+        trim_start_seconds = data.get("trim_start_seconds")
+        trim_end_seconds = data.get("trim_end_seconds")
+        trim_overwrite = data.get("trim_overwrite")
 
         if isinstance(input_dir, str):
             self.input_dir_var.set(input_dir)
@@ -319,6 +373,16 @@ class VideoEditorApp:
             sort_label = self.sort_label_by_mode.get(sort_mode)
             if sort_label:
                 self.sort_label_var.set(sort_label)
+        if isinstance(trim_input_file, str):
+            self.trim_input_file_var.set(trim_input_file)
+        if isinstance(trim_output_dir, str):
+            self.trim_output_dir_var.set(trim_output_dir)
+        if isinstance(trim_start_seconds, (int, float, str)):
+            self.trim_start_seconds_var.set(str(trim_start_seconds))
+        if isinstance(trim_end_seconds, (int, float, str)):
+            self.trim_end_seconds_var.set(str(trim_end_seconds))
+        if isinstance(trim_overwrite, bool):
+            self.trim_overwrite_var.set(trim_overwrite)
 
     def _save_user_settings(self) -> None:
         profile_label = self.profile_menu_var.get().strip()
@@ -330,6 +394,11 @@ class VideoEditorApp:
             "profile_key": profile_key,
             "sort_mode": sort_mode,
             "overwrite": bool(self.overwrite_var.get()),
+            "trim_input_file": self.trim_input_file_var.get().strip(),
+            "trim_output_dir": self.trim_output_dir_var.get().strip(),
+            "trim_start_seconds": self.trim_start_seconds_var.get().strip(),
+            "trim_end_seconds": self.trim_end_seconds_var.get().strip(),
+            "trim_overwrite": bool(self.trim_overwrite_var.get()),
         }
         try:
             self.config_path.write_text(
@@ -422,24 +491,151 @@ class VideoEditorApp:
         self._append_log(f"Atalho criado: {shortcut_path}")
         messagebox.showinfo("Atalho criado", f"{guidance}\n\nArquivo: {shortcut_path}")
 
-    def choose_input_dir(self) -> None:
-        selected = filedialog.askdirectory(title="Selecione a pasta de videos")
-        if selected:
-            self.input_dir_var.set(selected)
-            self.refresh_video_list()
+    def _close_trim_window(self) -> None:
+        if self.trim_window and self.trim_window.winfo_exists():
+            self.trim_window.destroy()
+        self.trim_window = None
+        self.trim_log_text = None
+        self.trim_run_button = None
 
-    def choose_output_dir(self) -> None:
-        selected = filedialog.askdirectory(title="Selecione a pasta de output")
-        if selected:
-            self.output_dir_var.set(selected)
+    def open_trim_mode(self) -> None:
+        if self.trim_window and self.trim_window.winfo_exists():
+            self.trim_window.deiconify()
+            self.trim_window.lift()
+            self.trim_window.focus_force()
+            return
 
-    def open_output_dir(self) -> None:
-        raw_output_dir = self.output_dir_var.get().strip()
-        if not raw_output_dir:
+        if not self.trim_output_dir_var.get().strip():
+            self.trim_output_dir_var.set(self.output_dir_var.get().strip())
+
+        window = tk.Toplevel(self.root)
+        self.trim_window = window
+        window.title("Modo Recorte")
+        window.geometry("920x560")
+        window.minsize(820, 500)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(3, weight=1)
+        window.protocol("WM_DELETE_WINDOW", self._close_trim_window)
+
+        source_frame = ttk.Frame(window, padding=10)
+        source_frame.grid(row=0, column=0, sticky="ew")
+        source_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(source_frame, text="Video para recortar:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(source_frame, textvariable=self.trim_input_file_var).grid(
+            row=0, column=1, sticky="ew", padx=6
+        )
+        ttk.Button(source_frame, text="Selecionar video", command=self.choose_trim_input_file).grid(
+            row=0, column=2, sticky="e"
+        )
+        ttk.Button(
+            source_frame,
+            text="Usar selecionado da lista",
+            command=self.use_selected_video_for_trim,
+        ).grid(row=0, column=3, sticky="e", padx=(6, 0))
+
+        output_frame = ttk.Frame(window, padding=(10, 0, 10, 8))
+        output_frame.grid(row=1, column=0, sticky="ew")
+        output_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(output_frame, text="Pasta de output do recorte:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(output_frame, textvariable=self.trim_output_dir_var).grid(
+            row=0, column=1, sticky="ew", padx=6
+        )
+        ttk.Button(output_frame, text="Selecionar", command=self.choose_trim_output_dir).grid(
+            row=0, column=2, sticky="e"
+        )
+        ttk.Button(output_frame, text="Ver pasta", command=self.open_trim_output_dir).grid(
+            row=0, column=3, sticky="e", padx=(6, 0)
+        )
+
+        params_frame = ttk.Frame(window, padding=(10, 0, 10, 8))
+        params_frame.grid(row=2, column=0, sticky="ew")
+        params_frame.columnconfigure(5, weight=1)
+
+        ttk.Label(params_frame, text="Cortar no inicio (s):").grid(row=0, column=0, sticky="w")
+        ttk.Entry(params_frame, textvariable=self.trim_start_seconds_var, width=10).grid(
+            row=0, column=1, sticky="w", padx=(6, 14)
+        )
+        ttk.Label(params_frame, text="Cortar no final (s):").grid(row=0, column=2, sticky="w")
+        ttk.Entry(params_frame, textvariable=self.trim_end_seconds_var, width=10).grid(
+            row=0, column=3, sticky="w", padx=(6, 14)
+        )
+        ttk.Checkbutton(
+            params_frame,
+            text="Sobrescrever recorte existente",
+            variable=self.trim_overwrite_var,
+        ).grid(row=0, column=4, sticky="w")
+
+        self.trim_run_button = ttk.Button(params_frame, text="Executar recorte", command=self.run_trim)
+        self.trim_run_button.grid(row=0, column=5, sticky="e")
+
+        ttk.Label(params_frame, textvariable=self.trim_status_var).grid(
+            row=1, column=0, columnspan=6, sticky="w", pady=(6, 0)
+        )
+        ttk.Label(
+            params_frame,
+            text=(
+                "Dica: voce pode recortar apenas inicio, apenas final, ou ambos. "
+                "Ex.: inicio=2.5 e final=1.0."
+            ),
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
+
+        log_frame = ttk.LabelFrame(window, text="Log de recorte", padding=8)
+        log_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+
+        self.trim_log_text = tk.Text(log_frame, height=14, state="disabled")
+        self.trim_log_text.grid(row=0, column=0, sticky="nsew")
+        trim_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.trim_log_text.yview)
+        trim_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.trim_log_text.configure(yscrollcommand=trim_scrollbar.set)
+
+    def choose_trim_input_file(self) -> None:
+        video_pattern = " ".join([f"*{extension}" for extension in sorted(VIDEO_EXTENSIONS)])
+        selected = filedialog.askopenfilename(
+            title="Selecione o video para recorte",
+            filetypes=[
+                ("Arquivos de video", video_pattern),
+                ("Todos os arquivos", "*.*"),
+            ],
+        )
+        if selected:
+            self.trim_input_file_var.set(selected)
+
+    def use_selected_video_for_trim(self) -> None:
+        if not hasattr(self, "video_tree"):
+            messagebox.showerror("Erro", "Lista principal de videos nao disponivel.")
+            return
+
+        selected_item_ids = self.video_tree.selection()
+        if not selected_item_ids:
+            messagebox.showerror("Erro", "Selecione um video na lista principal primeiro.")
+            return
+
+        selected_path = self.tree_id_to_path.get(selected_item_ids[0])
+        if not selected_path:
+            messagebox.showerror("Erro", "Nao foi possivel mapear o video selecionado.")
+            return
+
+        self.trim_input_file_var.set(str(selected_path.resolve()))
+        if not self.trim_output_dir_var.get().strip():
+            self.trim_output_dir_var.set(self.output_dir_var.get().strip())
+        self.open_trim_mode()
+
+    def choose_trim_output_dir(self) -> None:
+        selected = filedialog.askdirectory(title="Selecione a pasta de output do recorte")
+        if selected:
+            self.trim_output_dir_var.set(selected)
+
+    def _open_directory(self, raw_output_dir: str) -> None:
+        target_dir = raw_output_dir.strip()
+        if not target_dir:
             messagebox.showerror("Erro", "Selecione a pasta de output.")
             return
 
-        output_path = Path(raw_output_dir)
+        output_path = Path(target_dir)
         try:
             output_path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -454,6 +650,102 @@ class VideoEditorApp:
             os.startfile(str(output_path.resolve()))  # type: ignore[attr-defined]
         except OSError as exc:
             messagebox.showerror("Erro", f"Nao foi possivel abrir a pasta: {exc}")
+
+    def open_trim_output_dir(self) -> None:
+        self._open_directory(self.trim_output_dir_var.get())
+
+    def _set_trim_run_button_state(self, state: str) -> None:
+        if self.trim_run_button and self.trim_run_button.winfo_exists():
+            self.trim_run_button.configure(state=state)
+
+    def run_trim(self) -> None:
+        input_file = self.trim_input_file_var.get().strip()
+        output_dir = self.trim_output_dir_var.get().strip()
+        if not input_file:
+            messagebox.showerror("Erro", "Selecione o video para recorte.")
+            return
+        if not output_dir:
+            messagebox.showerror("Erro", "Selecione a pasta de output do recorte.")
+            return
+
+        start_raw = self.trim_start_seconds_var.get().strip().replace(",", ".") or "0"
+        end_raw = self.trim_end_seconds_var.get().strip().replace(",", ".") or "0"
+        try:
+            trim_start_seconds = float(start_raw)
+            trim_end_seconds = float(end_raw)
+        except ValueError:
+            messagebox.showerror("Erro", "Inicio e final devem ser numeros validos (segundos).")
+            return
+
+        if trim_start_seconds < 0 or trim_end_seconds < 0:
+            messagebox.showerror("Erro", "Inicio e final nao podem ser negativos.")
+            return
+
+        self._set_trim_run_button_state("disabled")
+        self.trim_status_var.set("Processando recorte...")
+        self._append_trim_log(
+            "Iniciando recorte: "
+            f"inicio={trim_start_seconds:.3f}s | final={trim_end_seconds:.3f}s"
+        )
+
+        worker = threading.Thread(
+            target=self._process_trim,
+            args=(Path(input_file), Path(output_dir), trim_start_seconds, trim_end_seconds, self.trim_overwrite_var.get()),
+            daemon=True,
+        )
+        worker.start()
+
+    def _process_trim(
+        self,
+        input_file: Path,
+        output_dir: Path,
+        trim_start_seconds: float,
+        trim_end_seconds: float,
+        overwrite: bool,
+    ) -> None:
+        try:
+            result = trim_video(
+                input_path=input_file,
+                output_dir=output_dir,
+                trim_start_seconds=trim_start_seconds,
+                trim_end_seconds=trim_end_seconds,
+                overwrite=overwrite,
+            )
+            size_summary = (
+                f"Original: {format_bytes(result.original_size_bytes)} | "
+                f"Final: {format_bytes(result.output_size_bytes)} | "
+                f"{format_size_change_label(result.size_reduction_percent)}"
+            )
+            time_summary = (
+                f"Duracao original: {result.original_duration_seconds:.3f}s | "
+                f"Duracao final: {result.output_duration_seconds:.3f}s"
+            )
+            self.root.after(
+                0,
+                lambda p=result.output_path, s=size_summary, t=time_summary: self._append_trim_log(
+                    f"OK -> {p} | {t} | {s}"
+                ),
+            )
+            self.root.after(0, lambda: self.trim_status_var.set("Recorte concluido com sucesso."))
+        except (FFmpegNotFoundError, VideoProcessingError, FileNotFoundError, ValueError) as exc:
+            self.root.after(0, lambda msg=str(exc): self._append_trim_log(f"ERRO -> {msg}"))
+            self.root.after(0, lambda: self.trim_status_var.set("Falha no recorte."))
+        finally:
+            self.root.after(0, lambda: self._set_trim_run_button_state("normal"))
+
+    def choose_input_dir(self) -> None:
+        selected = filedialog.askdirectory(title="Selecione a pasta de videos")
+        if selected:
+            self.input_dir_var.set(selected)
+            self.refresh_video_list()
+
+    def choose_output_dir(self) -> None:
+        selected = filedialog.askdirectory(title="Selecione a pasta de output")
+        if selected:
+            self.output_dir_var.set(selected)
+
+    def open_output_dir(self) -> None:
+        self._open_directory(self.output_dir_var.get())
 
     def _on_sort_changed(self, _event: object) -> None:
         self._on_sort_mode_changed()
@@ -603,6 +895,15 @@ class VideoEditorApp:
         final_status = f"Concluido. Sucesso: {success_count} | Erros: {error_count}"
         self.root.after(0, lambda: self.status_var.set(final_status))
         self.root.after(0, lambda: self.run_button.configure(state="normal"))
+
+    def _append_trim_log(self, message: str) -> None:
+        if self.trim_log_text and self.trim_log_text.winfo_exists():
+            self.trim_log_text.configure(state="normal")
+            self.trim_log_text.insert(tk.END, f"{message}\n")
+            self.trim_log_text.see(tk.END)
+            self.trim_log_text.configure(state="disabled")
+            return
+        self._append_log(f"[Recorte] {message}")
 
     def _append_log(self, message: str) -> None:
         self.log_text.configure(state="normal")

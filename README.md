@@ -12,6 +12,7 @@ Projeto para editar videos de gameplay (Rocket League), com foco inicial em comp
 Documentacao oficial consultada:
 - FFmpeg: https://ffmpeg.org/documentation.html
 - FFmpeg filtros: https://ffmpeg.org/ffmpeg-filters.html
+- FFmpeg opcoes (`-ss`, `-to`): https://ffmpeg.org/ffmpeg-doc.html
 - Python Tkinter: https://docs.python.org/3/library/tkinter.html
 - PyInstaller: https://www.pyinstaller.org/en/stable/usage.html
 
@@ -64,6 +65,25 @@ A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas a
 - executar processamento
 - criar atalho na area de trabalho
 
+## Modo recorte
+
+O recorte foi implementado em modo separado para nao impactar o fluxo de compactacao.
+
+Como abrir:
+- Menu `Arquivo > Abrir modo recorte`
+- ou menu `Recorte > Abrir modo recorte`
+
+No modo recorte:
+1. Selecione qualquer video (de input, output, ou outro caminho no disco).
+2. Informe quanto cortar no inicio (segundos).
+3. Informe quanto cortar no final (segundos).
+4. Defina a pasta de output do recorte.
+5. Execute o recorte.
+
+Saida:
+- Arquivo gerado como `*_trim.mp4`.
+- Log com duracao original/final, tamanho original/final e percentual.
+
 No log de execucao, cada video mostra:
 - tamanho original
 - tamanho final
@@ -81,6 +101,11 @@ Arquivo editavel manualmente, com campos:
 - `profile_key`
 - `sort_mode`
 - `overwrite`
+- `trim_input_file`
+- `trim_output_dir`
+- `trim_start_seconds`
+- `trim_end_seconds`
+- `trim_overwrite`
 
 ## Perfis de edicao
 
