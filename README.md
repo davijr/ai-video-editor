@@ -119,6 +119,14 @@ Cada execucao de compactacao e recorte e registrada em:
 Uso no app:
 - A coluna `Processado` indica `Sim` quando aquele arquivo de entrada ja foi processado com sucesso em alguma execucao anterior.
 - O indicador e apenas informativo e nao bloqueia reprocessamento.
+- A aba `Processados` lista os processamentos com:
+  - `Data/Hora`, `Modo`, `Original`, `Saida`
+  - `Tam. Original`, `Tam. Final` e `Variacao` (reducao/aumento em percentual)
+- Acoes da aba `Processados`:
+  - `Recarregar historico`
+  - `Tocar original` (abre/toca o arquivo original no player padrao do Windows)
+  - `Tocar saida` (abre/toca o arquivo gerado no player padrao do Windows)
+- As mesmas acoes de historico tambem estao no menu `Historico`.
 
 ## Configuracao persistente do usuario
 

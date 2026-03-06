@@ -99,6 +99,10 @@ class VideoEditorApp:
         self.available_gpu_encoders: list[str] = []
         self.history_lock = threading.Lock()
         self.processed_input_paths: set[str] = set()
+        self.processed_history_entries: list[dict[str, object]] = []
+        self.processed_history_row_map: dict[str, dict[str, object]] = {}
+        self.processed_history_count_var = tk.StringVar(value="Processados: 0")
+        self.processed_history_tree: ttk.Treeview | None = None
         self.tree_drag_anchor_item_id: str | None = None
         self._setting_traces_registered = False
 
@@ -250,16 +254,90 @@ class VideoEditorApp:
         self.run_button.grid(row=0, column=0, sticky="w")
         ttk.Label(action_frame, textvariable=self.status_var).grid(row=0, column=1, sticky="e")
 
-        log_frame = ttk.LabelFrame(action_frame, text="Log de execucao")
-        log_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
+        results_notebook = ttk.Notebook(action_frame)
+        results_notebook.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
 
-        self.log_text = tk.Text(log_frame, height=12, state="disabled")
+        log_tab = ttk.Frame(results_notebook, padding=6)
+        log_tab.columnconfigure(0, weight=1)
+        log_tab.rowconfigure(0, weight=1)
+        results_notebook.add(log_tab, text="Log")
+
+        self.log_text = tk.Text(log_tab, height=12, state="disabled")
         self.log_text.grid(row=0, column=0, sticky="nsew")
-        log_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        log_scrollbar = ttk.Scrollbar(log_tab, orient="vertical", command=self.log_text.yview)
         log_scrollbar.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
+
+        processed_tab = ttk.Frame(results_notebook, padding=6)
+        processed_tab.columnconfigure(0, weight=1)
+        processed_tab.rowconfigure(0, weight=1)
+        results_notebook.add(processed_tab, text="Processados")
+
+        self.processed_history_tree = ttk.Treeview(
+            processed_tab,
+            columns=(
+                "index",
+                "timestamp",
+                "mode",
+                "input_name",
+                "output_name",
+                "original_size",
+                "output_size",
+                "change",
+            ),
+            show="headings",
+            selectmode="browse",
+        )
+        self.processed_history_tree.heading("index", text="#")
+        self.processed_history_tree.heading("timestamp", text="Data/Hora")
+        self.processed_history_tree.heading("mode", text="Modo")
+        self.processed_history_tree.heading("input_name", text="Original")
+        self.processed_history_tree.heading("output_name", text="Saida")
+        self.processed_history_tree.heading("original_size", text="Tam. Original")
+        self.processed_history_tree.heading("output_size", text="Tam. Final")
+        self.processed_history_tree.heading("change", text="Variacao")
+        self.processed_history_tree.column("index", width=45, minwidth=35, anchor="center", stretch=False)
+        self.processed_history_tree.column("timestamp", width=155, minwidth=140, anchor="center", stretch=False)
+        self.processed_history_tree.column("mode", width=95, minwidth=85, anchor="center", stretch=False)
+        self.processed_history_tree.column("input_name", width=215, minwidth=160, anchor="w")
+        self.processed_history_tree.column("output_name", width=215, minwidth=160, anchor="w")
+        self.processed_history_tree.column("original_size", width=105, minwidth=95, anchor="e", stretch=False)
+        self.processed_history_tree.column("output_size", width=95, minwidth=85, anchor="e", stretch=False)
+        self.processed_history_tree.column("change", width=95, minwidth=85, anchor="center", stretch=False)
+        self.processed_history_tree.grid(row=0, column=0, sticky="nsew")
+
+        processed_scrollbar = ttk.Scrollbar(
+            processed_tab,
+            orient="vertical",
+            command=self.processed_history_tree.yview,
+        )
+        processed_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.processed_history_tree.configure(yscrollcommand=processed_scrollbar.set)
+
+        processed_controls = ttk.Frame(processed_tab, padding=(0, 6, 0, 0))
+        processed_controls.grid(row=1, column=0, columnspan=2, sticky="ew")
+        processed_controls.columnconfigure(4, weight=1)
+        ttk.Button(
+            processed_controls,
+            text="Recarregar historico",
+            command=self._reload_history_and_refresh_views,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Button(
+            processed_controls,
+            text="Tocar original",
+            command=self.play_selected_processed_original,
+        ).grid(row=0, column=1, sticky="w", padx=(6, 0))
+        ttk.Button(
+            processed_controls,
+            text="Tocar saida",
+            command=self.play_selected_processed_output,
+        ).grid(row=0, column=2, sticky="w", padx=(6, 0))
+        ttk.Label(
+            processed_controls,
+            textvariable=self.processed_history_count_var,
+        ).grid(row=0, column=5, sticky="e")
+
+        self._refresh_processed_history_view()
 
         self._build_menu()
 
@@ -358,6 +436,21 @@ class VideoEditorApp:
         )
         recorte_menu.add_command(label="Executar recorte", command=self.run_trim)
         menu_bar.add_cascade(label="Recorte", menu=recorte_menu)
+
+        historico_menu = tk.Menu(menu_bar, tearoff=0)
+        historico_menu.add_command(
+            label="Recarregar historico",
+            command=self._reload_history_and_refresh_views,
+        )
+        historico_menu.add_command(
+            label="Tocar original selecionado",
+            command=self.play_selected_processed_original,
+        )
+        historico_menu.add_command(
+            label="Tocar saida selecionada",
+            command=self.play_selected_processed_output,
+        )
+        menu_bar.add_cascade(label="Historico", menu=historico_menu)
 
     def _register_setting_traces(self) -> None:
         if self._setting_traces_registered:
@@ -478,8 +571,67 @@ class VideoEditorApp:
         except OSError:
             return str(path.absolute()).lower()
 
+    @staticmethod
+    def _coerce_int(value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(float(value.strip()))
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _coerce_float(value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            normalized = value.strip().replace(",", ".")
+            try:
+                return float(normalized)
+            except ValueError:
+                return None
+        return None
+
+    def _build_processed_history_record(
+        self, entry: dict[str, object]
+    ) -> dict[str, object] | None:
+        if entry.get("status") != "success":
+            return None
+
+        input_path_raw = entry.get("input_path")
+        if not isinstance(input_path_raw, str) or not input_path_raw.strip():
+            return None
+
+        output_path_raw = entry.get("output_path")
+        output_path = output_path_raw.strip() if isinstance(output_path_raw, str) else ""
+        mode_raw = entry.get("mode")
+        mode = mode_raw.strip() if isinstance(mode_raw, str) else ""
+        timestamp_raw = entry.get("timestamp_utc")
+        timestamp_utc = timestamp_raw.strip() if isinstance(timestamp_raw, str) else ""
+
+        return {
+            "timestamp_utc": timestamp_utc,
+            "mode": mode,
+            "input_path": str(Path(input_path_raw).resolve()),
+            "output_path": str(Path(output_path).resolve()) if output_path else "",
+            "original_size_bytes": self._coerce_int(entry.get("original_size_bytes")),
+            "output_size_bytes": self._coerce_int(entry.get("output_size_bytes")),
+            "size_reduction_percent": self._coerce_float(entry.get("size_reduction_percent")),
+        }
+
     def _load_execution_history(self) -> None:
         if not self.history_path.exists():
+            with self.history_lock:
+                self.processed_input_paths.clear()
+                self.processed_history_entries.clear()
             return
 
         invalid_lines = 0
@@ -489,27 +641,31 @@ class VideoEditorApp:
             self._add_startup_warning(f"Nao foi possivel ler historico de execucao: {exc}")
             return
 
-        for raw_line in content.splitlines():
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                invalid_lines += 1
-                continue
+        with self.history_lock:
+            self.processed_input_paths.clear()
+            self.processed_history_entries.clear()
 
-            if not isinstance(entry, dict):
-                invalid_lines += 1
-                continue
+            for raw_line in content.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    invalid_lines += 1
+                    continue
 
-            if entry.get("status") != "success":
-                continue
-            input_path = entry.get("input_path")
-            if not isinstance(input_path, str) or not input_path:
-                continue
+                if not isinstance(entry, dict):
+                    invalid_lines += 1
+                    continue
 
-            self.processed_input_paths.add(self._normalize_history_path(input_path))
+                record = self._build_processed_history_record(entry)
+                if not record:
+                    continue
+
+                input_path = str(record["input_path"])
+                self.processed_input_paths.add(self._normalize_history_path(input_path))
+                self.processed_history_entries.append(record)
 
         if invalid_lines > 0:
             self._add_startup_warning(
@@ -527,6 +683,11 @@ class VideoEditorApp:
             with self.history_lock:
                 with self.history_path.open("a", encoding="utf-8") as history_file:
                     history_file.write(serialized + "\n")
+                record = self._build_processed_history_record(payload)
+                if record:
+                    self.processed_history_entries.append(record)
+                    input_path = str(record["input_path"])
+                    self.processed_input_paths.add(self._normalize_history_path(input_path))
         except OSError as exc:
             self.root.after(
                 0,
@@ -534,6 +695,9 @@ class VideoEditorApp:
                     f"ERRO -> Nao foi possivel registrar historico: {msg}"
                 ),
             )
+            return
+
+        self.root.after(0, self._refresh_processed_history_view)
 
     def _build_history_base_entry(
         self,
@@ -567,6 +731,110 @@ class VideoEditorApp:
                 continue
             values[1] = "Sim"
             self.video_tree.item(item_id, values=tuple(values))
+
+    @staticmethod
+    def _format_history_timestamp(raw_timestamp: object) -> str:
+        if not isinstance(raw_timestamp, str) or not raw_timestamp.strip():
+            return "-"
+        text = raw_timestamp.strip()
+        try:
+            iso_value = text.replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(iso_value)
+            return parsed.astimezone().strftime("%d/%m/%Y %H:%M:%S")
+        except ValueError:
+            return text
+
+    def _refresh_processed_history_view(self) -> None:
+        tree = self.processed_history_tree
+        if not tree or not tree.winfo_exists():
+            return
+
+        tree.delete(*tree.get_children())
+        self.processed_history_row_map.clear()
+
+        with self.history_lock:
+            entries = list(reversed(self.processed_history_entries))
+
+        for index, record in enumerate(entries, start=1):
+            input_path = str(record.get("input_path", ""))
+            output_path = str(record.get("output_path", ""))
+            mode = str(record.get("mode", "")).strip().lower()
+            mode_label = "Compactacao" if mode == "compress" else "Recorte" if mode == "trim" else "-"
+            original_size_bytes = self._coerce_int(record.get("original_size_bytes"))
+            output_size_bytes = self._coerce_int(record.get("output_size_bytes"))
+            size_change = self._coerce_float(record.get("size_reduction_percent"))
+
+            values = (
+                index,
+                self._format_history_timestamp(record.get("timestamp_utc")),
+                mode_label,
+                Path(input_path).name if input_path else "-",
+                Path(output_path).name if output_path else "-",
+                format_bytes(original_size_bytes) if original_size_bytes is not None else "-",
+                format_bytes(output_size_bytes) if output_size_bytes is not None else "-",
+                format_size_change_label(size_change) if size_change is not None else "-",
+            )
+            item_id = tree.insert("", "end", values=values)
+            self.processed_history_row_map[item_id] = record
+
+        self.processed_history_count_var.set(f"Processados: {len(entries)}")
+
+    def _reload_history_and_refresh_views(self) -> None:
+        self._load_execution_history()
+        self._refresh_processed_history_view()
+        self.refresh_video_list()
+        self._append_log("Historico de execucao recarregado.")
+
+    def _get_selected_processed_history_entry(self) -> dict[str, object] | None:
+        tree = self.processed_history_tree
+        if not tree or not tree.winfo_exists():
+            return None
+
+        selected_items = tree.selection()
+        if not selected_items:
+            messagebox.showerror("Erro", "Selecione um item na lista de processados.")
+            return None
+
+        entry = self.processed_history_row_map.get(selected_items[0])
+        if not entry:
+            messagebox.showerror("Erro", "Nao foi possivel localizar o item selecionado.")
+            return None
+        return entry
+
+    def _play_media_file(self, path_value: str, label: str) -> None:
+        target = path_value.strip()
+        if not target:
+            messagebox.showerror("Erro", f"Nenhum caminho de {label} disponivel.")
+            return
+
+        path = Path(target)
+        if not path.exists() or not path.is_file():
+            messagebox.showerror("Erro", f"Arquivo de {label} nao encontrado:\n{path}")
+            return
+
+        if not hasattr(os, "startfile"):
+            messagebox.showerror("Erro", "Este recurso requer Windows.")
+            return
+
+        try:
+            os.startfile(str(path.resolve()))  # type: ignore[attr-defined]
+            self._append_log(f"Abrindo {label}: {path}")
+        except OSError as exc:
+            messagebox.showerror("Erro", f"Nao foi possivel abrir {label}: {exc}")
+
+    def play_selected_processed_original(self) -> None:
+        entry = self._get_selected_processed_history_entry()
+        if not entry:
+            return
+        input_path = entry.get("input_path")
+        self._play_media_file(str(input_path) if isinstance(input_path, str) else "", "arquivo original")
+
+    def play_selected_processed_output(self) -> None:
+        entry = self._get_selected_processed_history_entry()
+        if not entry:
+            return
+        output_path = entry.get("output_path")
+        self._play_media_file(str(output_path) if isinstance(output_path, str) else "", "arquivo de saida")
 
     def _refresh_gpu_status(self) -> None:
         try:
