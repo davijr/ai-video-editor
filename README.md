@@ -13,6 +13,7 @@ Documentacao oficial consultada:
 - FFmpeg: https://ffmpeg.org/documentation.html
 - FFmpeg filtros: https://ffmpeg.org/ffmpeg-filters.html
 - FFmpeg opcoes (`-ss`, `-to`): https://ffmpeg.org/ffmpeg-doc.html
+- FFmpeg encoders/codecs: https://ffmpeg.org/ffmpeg-codecs.html
 - Python Tkinter: https://docs.python.org/3/library/tkinter.html
 - PyInstaller: https://www.pyinstaller.org/en/stable/usage.html
 
@@ -38,6 +39,9 @@ Parametros:
 - `--output-dir`: pasta de saida.
 - `--profile`: perfil de edicao (atual: `whatsapp_mp4_h264_aac`).
 - `--overwrite`: sobrescreve arquivo de saida, se ja existir.
+- `--use-gpu`: ativa encode por GPU.
+- `--gpu-encoder`: define encoder GPU (`auto`, `h264_nvenc`, `h264_amf`, `h264_qsv`).
+- `--list-gpu`: lista encoders GPU detectados pelo FFmpeg.
 
 ## Interface grafica (Windows)
 
@@ -54,8 +58,9 @@ Fluxo:
 4. Selecione os videos desejados (contador `Selecionados: X / Y`).
 5. Escolha o script/perfil pronto.
 6. Defina a pasta de saida.
-7. Use `Ver pasta` para abrir rapidamente o output no Explorer.
-8. Clique em `Executar`.
+7. Ative/desative `Usar GPU (aceleracao)` quando desejar.
+8. Use `Ver pasta` para abrir rapidamente o output no Explorer.
+9. Clique em `Executar`.
 
 A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas acoes:
 - selecionar entrada/output
@@ -64,6 +69,21 @@ A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas a
 - escolher perfil
 - executar processamento
 - criar atalho na area de trabalho
+- ativar/desativar GPU e atualizar deteccao de GPU
+
+## Aceleracao por GPU
+
+A aplicacao identifica encoders H.264 de GPU disponiveis no FFmpeg e permite ativar/desativar uso quando quiser.
+
+Encoders detectados automaticamente (quando disponiveis):
+- `h264_nvenc` (NVIDIA)
+- `h264_amf` (AMD)
+- `h264_qsv` (Intel Quick Sync)
+
+Comportamento:
+- Toggle desativado: processamento em CPU (comportamento padrao).
+- Toggle ativado: usa o encoder GPU detectado com maior prioridade.
+- Se nao houver encoder GPU detectado, a execucao exibe erro claro.
 
 ## Modo recorte
 
@@ -78,7 +98,8 @@ No modo recorte:
 2. Informe quanto cortar no inicio (segundos).
 3. Informe quanto cortar no final (segundos).
 4. Defina a pasta de output do recorte.
-5. Execute o recorte.
+5. Opcionalmente ative/desative GPU para o recorte.
+6. Execute o recorte.
 
 Saida:
 - Arquivo gerado como `*_trim.mp4`.
@@ -101,6 +122,7 @@ Arquivo editavel manualmente, com campos:
 - `profile_key`
 - `sort_mode`
 - `overwrite`
+- `gpu_enabled`
 - `trim_input_file`
 - `trim_output_dir`
 - `trim_start_seconds`

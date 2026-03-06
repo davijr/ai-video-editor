@@ -16,6 +16,8 @@ from processor import (
     VIDEO_EXTENSIONS,
     FFmpegNotFoundError,
     VideoProcessingError,
+    detect_gpu_video_encoders,
+    get_gpu_status_message,
     list_videos,
     process_video,
     trim_video,
@@ -58,6 +60,9 @@ class VideoEditorApp:
         self.output_dir_var = tk.StringVar(value=str(Path.cwd() / "output"))
         self.status_var = tk.StringVar(value="Pronto")
         self.overwrite_var = tk.BooleanVar(value=True)
+        self.gpu_enabled_var = tk.BooleanVar(value=False)
+        self.gpu_status_var = tk.StringVar(value="GPU: verificando...")
+        self.gpu_encoder_var = tk.StringVar(value="")
         self.profile_description_var = tk.StringVar(value="")
         self.trim_input_file_var = tk.StringVar(value="")
         self.trim_output_dir_var = tk.StringVar(value=str(Path.cwd() / "output"))
@@ -90,12 +95,14 @@ class VideoEditorApp:
         self.trim_window: tk.Toplevel | None = None
         self.trim_log_text: tk.Text | None = None
         self.trim_run_button: ttk.Button | None = None
+        self.available_gpu_encoders: list[str] = []
         self._setting_traces_registered = False
 
         loaded_settings = self._load_user_settings()
         self._apply_user_settings(loaded_settings)
 
         self._build_ui()
+        self._refresh_gpu_status()
         self._register_setting_traces()
         self._save_user_settings()
 
@@ -154,12 +161,26 @@ class VideoEditorApp:
             text="Sobrescrever arquivos existentes",
             variable=self.overwrite_var,
         ).grid(row=1, column=2, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(
+            settings_frame,
+            text="Usar GPU (aceleracao)",
+            variable=self.gpu_enabled_var,
+        ).grid(row=1, column=3, sticky="w", pady=(8, 0), padx=(6, 0))
 
         ttk.Label(
             settings_frame,
             textvariable=self.profile_description_var,
             wraplength=640,
-        ).grid(row=2, column=1, columnspan=2, sticky="w", padx=6, pady=(4, 0))
+        ).grid(row=2, column=1, columnspan=3, sticky="w", padx=6, pady=(4, 0))
+        ttk.Label(
+            settings_frame,
+            textvariable=self.gpu_status_var,
+        ).grid(row=3, column=1, columnspan=3, sticky="w", padx=6, pady=(2, 0))
+        ttk.Button(
+            settings_frame,
+            text="Atualizar GPU",
+            command=self._refresh_gpu_status,
+        ).grid(row=3, column=0, sticky="w", pady=(2, 0))
 
         list_controls = ttk.Frame(self.root, padding=(10, 0, 10, 0))
         list_controls.grid(row=2, column=0, sticky="ew")
@@ -271,6 +292,14 @@ class VideoEditorApp:
             label="Sobrescrever arquivos existentes",
             variable=self.overwrite_var,
         )
+        processamento_menu.add_checkbutton(
+            label="Usar GPU (aceleracao)",
+            variable=self.gpu_enabled_var,
+        )
+        processamento_menu.add_command(
+            label="Atualizar deteccao de GPU",
+            command=self._refresh_gpu_status,
+        )
 
         perfil_menu = tk.Menu(processamento_menu, tearoff=0)
         for profile_label in self.profile_labels:
@@ -309,6 +338,14 @@ class VideoEditorApp:
             label="Sobrescrever recorte existente",
             variable=self.trim_overwrite_var,
         )
+        recorte_menu.add_checkbutton(
+            label="Usar GPU (aceleracao)",
+            variable=self.gpu_enabled_var,
+        )
+        recorte_menu.add_command(
+            label="Atualizar deteccao de GPU",
+            command=self._refresh_gpu_status,
+        )
         recorte_menu.add_command(label="Executar recorte", command=self.run_trim)
         menu_bar.add_cascade(label="Recorte", menu=recorte_menu)
 
@@ -318,6 +355,7 @@ class VideoEditorApp:
         self.input_dir_var.trace_add("write", self._on_setting_var_changed)
         self.output_dir_var.trace_add("write", self._on_setting_var_changed)
         self.overwrite_var.trace_add("write", self._on_setting_var_changed)
+        self.gpu_enabled_var.trace_add("write", self._on_setting_var_changed)
         self.profile_menu_var.trace_add("write", self._on_setting_var_changed)
         self.sort_label_var.trace_add("write", self._on_setting_var_changed)
         self.trim_input_file_var.trace_add("write", self._on_setting_var_changed)
@@ -352,6 +390,7 @@ class VideoEditorApp:
         input_dir = data.get("input_dir")
         output_dir = data.get("output_dir")
         overwrite = data.get("overwrite")
+        gpu_enabled = data.get("gpu_enabled")
         profile_key = data.get("profile_key")
         sort_mode = data.get("sort_mode")
         trim_input_file = data.get("trim_input_file")
@@ -366,6 +405,8 @@ class VideoEditorApp:
             self.output_dir_var.set(output_dir)
         if isinstance(overwrite, bool):
             self.overwrite_var.set(overwrite)
+        if isinstance(gpu_enabled, bool):
+            self.gpu_enabled_var.set(gpu_enabled)
 
         if isinstance(profile_key, str):
             profile = PROFILES.get(profile_key)
@@ -396,6 +437,7 @@ class VideoEditorApp:
             "profile_key": profile_key,
             "sort_mode": sort_mode,
             "overwrite": bool(self.overwrite_var.get()),
+            "gpu_enabled": bool(self.gpu_enabled_var.get()),
             "trim_input_file": self.trim_input_file_var.get().strip(),
             "trim_output_dir": self.trim_output_dir_var.get().strip(),
             "trim_start_seconds": self.trim_start_seconds_var.get().strip(),
@@ -409,6 +451,46 @@ class VideoEditorApp:
             )
         except OSError as exc:
             self.startup_warning = f"Nao foi possivel salvar config: {exc}"
+
+    def _refresh_gpu_status(self) -> None:
+        try:
+            available = detect_gpu_video_encoders()
+            status_message = get_gpu_status_message()
+        except (FFmpegNotFoundError, VideoProcessingError) as exc:
+            self.available_gpu_encoders = []
+            self.gpu_encoder_var.set("")
+            self.gpu_status_var.set(f"GPU: falha na deteccao ({exc})")
+            return
+
+        self.available_gpu_encoders = [item.encoder for item in available]
+        if self.available_gpu_encoders:
+            current = self.gpu_encoder_var.get().strip()
+            if current not in self.available_gpu_encoders:
+                self.gpu_encoder_var.set(self.available_gpu_encoders[0])
+            selected = self.gpu_encoder_var.get().strip()
+            self.gpu_status_var.set(f"{status_message} | selecionado: {selected}")
+            return
+
+        self.gpu_encoder_var.set("")
+        self.gpu_status_var.set(status_message)
+
+    def _resolve_gpu_request(self) -> tuple[bool, str | None]:
+        use_gpu = bool(self.gpu_enabled_var.get())
+        if not use_gpu:
+            return False, None
+
+        if not self.available_gpu_encoders:
+            self._refresh_gpu_status()
+        if not self.available_gpu_encoders:
+            raise VideoProcessingError(
+                "GPU ativada, mas nenhum encoder H.264 de GPU foi detectado no FFmpeg."
+            )
+
+        selected = self.gpu_encoder_var.get().strip()
+        if selected not in self.available_gpu_encoders:
+            selected = self.available_gpu_encoders[0]
+            self.gpu_encoder_var.set(selected)
+        return True, selected
 
     @staticmethod
     def _ps_escape(value: str) -> str:
@@ -578,7 +660,7 @@ class VideoEditorApp:
 
         params_frame = ttk.Frame(window, padding=(10, 0, 10, 8))
         params_frame.grid(row=2, column=0, sticky="ew")
-        params_frame.columnconfigure(5, weight=1)
+        params_frame.columnconfigure(6, weight=1)
 
         ttk.Label(params_frame, text="Cortar no inicio (s):").grid(row=0, column=0, sticky="w")
         ttk.Entry(params_frame, textvariable=self.trim_start_seconds_var, width=10).grid(
@@ -593,12 +675,17 @@ class VideoEditorApp:
             text="Sobrescrever recorte existente",
             variable=self.trim_overwrite_var,
         ).grid(row=0, column=4, sticky="w")
+        ttk.Checkbutton(
+            params_frame,
+            text="Usar GPU (aceleracao)",
+            variable=self.gpu_enabled_var,
+        ).grid(row=0, column=5, sticky="w")
 
         self.trim_run_button = ttk.Button(params_frame, text="Executar recorte", command=self.run_trim)
-        self.trim_run_button.grid(row=0, column=5, sticky="e")
+        self.trim_run_button.grid(row=0, column=6, sticky="e")
 
         ttk.Label(params_frame, textvariable=self.trim_status_var).grid(
-            row=1, column=0, columnspan=6, sticky="w", pady=(6, 0)
+            row=1, column=0, columnspan=7, sticky="w", pady=(6, 0)
         )
         ttk.Label(
             params_frame,
@@ -606,7 +693,7 @@ class VideoEditorApp:
                 "Dica: voce pode recortar apenas inicio, apenas final, ou ambos. "
                 "Ex.: inicio=2.5 e final=1.0."
             ),
-        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(4, 0))
+        ).grid(row=2, column=0, columnspan=7, sticky="w", pady=(4, 0))
 
         log_frame = ttk.LabelFrame(window, text="Log de recorte", padding=8)
         log_frame.grid(row=3, column=0, sticky="nsew", padx=10, pady=(0, 10))
@@ -708,16 +795,31 @@ class VideoEditorApp:
             messagebox.showerror("Erro", "Inicio e final nao podem ser negativos.")
             return
 
+        try:
+            use_gpu, gpu_encoder = self._resolve_gpu_request()
+        except (FFmpegNotFoundError, VideoProcessingError) as exc:
+            messagebox.showerror("Erro", str(exc))
+            return
+
         self._set_trim_run_button_state("disabled")
         self.trim_status_var.set("Processando recorte...")
         self._append_trim_log(
             "Iniciando recorte: "
-            f"inicio={trim_start_seconds:.3f}s | final={trim_end_seconds:.3f}s"
+            f"inicio={trim_start_seconds:.3f}s | final={trim_end_seconds:.3f}s | "
+            f"{'GPU=' + str(gpu_encoder) if use_gpu and gpu_encoder else 'GPU=CPU'}"
         )
 
         worker = threading.Thread(
             target=self._process_trim,
-            args=(Path(input_file), Path(output_dir), trim_start_seconds, trim_end_seconds, self.trim_overwrite_var.get()),
+            args=(
+                Path(input_file),
+                Path(output_dir),
+                trim_start_seconds,
+                trim_end_seconds,
+                self.trim_overwrite_var.get(),
+                use_gpu,
+                gpu_encoder,
+            ),
             daemon=True,
         )
         worker.start()
@@ -729,6 +831,8 @@ class VideoEditorApp:
         trim_start_seconds: float,
         trim_end_seconds: float,
         overwrite: bool,
+        use_gpu: bool,
+        gpu_encoder: str | None,
     ) -> None:
         try:
             result = trim_video(
@@ -737,6 +841,8 @@ class VideoEditorApp:
                 trim_start_seconds=trim_start_seconds,
                 trim_end_seconds=trim_end_seconds,
                 overwrite=overwrite,
+                use_gpu=use_gpu,
+                gpu_encoder=gpu_encoder,
             )
             size_summary = (
                 f"Original: {format_bytes(result.original_size_bytes)} | "
@@ -747,10 +853,13 @@ class VideoEditorApp:
                 f"Duracao original: {result.original_duration_seconds:.3f}s | "
                 f"Duracao final: {result.output_duration_seconds:.3f}s"
             )
+            gpu_summary = (
+                f"GPU: {result.gpu_encoder}" if result.gpu_encoder else "GPU: CPU"
+            )
             self.root.after(
                 0,
-                lambda p=result.output_path, s=size_summary, t=time_summary: self._append_trim_log(
-                    f"OK -> {p} | {t} | {s}"
+                lambda p=result.output_path, s=size_summary, t=time_summary, g=gpu_summary: self._append_trim_log(
+                    f"OK -> {p} | {t} | {g} | {s}"
                 ),
             )
             self.root.after(0, lambda: self.trim_status_var.set("Recorte concluido com sucesso."))
@@ -869,14 +978,30 @@ class VideoEditorApp:
             messagebox.showerror("Erro", "Nao foi possivel mapear os videos selecionados.")
             return
         profile_key = self.profile_by_label[self.profile_combo.get()]
+        try:
+            use_gpu, gpu_encoder = self._resolve_gpu_request()
+        except (FFmpegNotFoundError, VideoProcessingError) as exc:
+            messagebox.showerror("Erro", str(exc))
+            return
 
         self.run_button.configure(state="disabled")
         self.status_var.set("Processando...")
-        self._append_log(f"Iniciando processamento de {len(selected_files)} video(s).")
+        gpu_summary = f"GPU={gpu_encoder}" if use_gpu and gpu_encoder else "GPU=CPU"
+        self._append_log(
+            f"Iniciando processamento de {len(selected_files)} video(s). "
+            f"{gpu_summary}"
+        )
 
         worker = threading.Thread(
             target=self._process_batch,
-            args=(selected_files, Path(output_dir), profile_key, self.overwrite_var.get()),
+            args=(
+                selected_files,
+                Path(output_dir),
+                profile_key,
+                self.overwrite_var.get(),
+                use_gpu,
+                gpu_encoder,
+            ),
             daemon=True,
         )
         worker.start()
@@ -887,6 +1012,8 @@ class VideoEditorApp:
         output_dir: Path,
         profile_key: str,
         overwrite: bool,
+        use_gpu: bool,
+        gpu_encoder: str | None,
     ) -> None:
         success_count = 0
         error_count = 0
@@ -904,6 +1031,8 @@ class VideoEditorApp:
                     output_dir=output_dir,
                     profile_key=profile_key,
                     overwrite=overwrite,
+                    use_gpu=use_gpu,
+                    gpu_encoder=gpu_encoder,
                 )
                 success_count += 1
                 size_summary = (
@@ -911,9 +1040,14 @@ class VideoEditorApp:
                     f"Final: {format_bytes(result.output_size_bytes)} | "
                     f"{format_size_change_label(result.size_reduction_percent)}"
                 )
+                gpu_summary = (
+                    f"GPU: {result.gpu_encoder}" if result.gpu_encoder else "GPU: CPU"
+                )
                 self.root.after(
                     0,
-                    lambda p=result.output_path, s=size_summary: self._append_log(f"OK -> {p} | {s}"),
+                    lambda p=result.output_path, s=size_summary, g=gpu_summary: self._append_log(
+                        f"OK -> {p} | {g} | {s}"
+                    ),
                 )
             except (FFmpegNotFoundError, VideoProcessingError, FileNotFoundError, ValueError) as exc:
                 error_count += 1
