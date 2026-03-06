@@ -47,12 +47,16 @@ def get_app_base_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+PRIMARY_ACTION_BUTTON_STYLE = "PrimaryAction.TButton"
+
+
 class VideoEditorApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("AI Video Editor")
         self.root.geometry("980x680")
         self.root.minsize(900, 620)
+        self.ui_style = ttk.Style(self.root)
         self.config_path = get_app_base_dir() / "user_settings.json"
         self.history_path = get_app_base_dir() / "execution_history.jsonl"
         self.startup_warning: str | None = None
@@ -110,10 +114,52 @@ class VideoEditorApp:
         loaded_settings = self._load_user_settings()
         self._apply_user_settings(loaded_settings)
 
+        self._configure_styles()
         self._build_ui()
         self._refresh_gpu_status()
         self._register_setting_traces()
         self._save_user_settings()
+
+    def _configure_styles(self) -> None:
+        style = self.ui_style
+        try:
+            theme_name = style.theme_use().strip().lower()
+        except tk.TclError:
+            theme_name = ""
+
+        style.configure(
+            PRIMARY_ACTION_BUTTON_STYLE,
+            font=("Segoe UI", 10, "bold"),
+            padding=(16, 8),
+        )
+        style.map(
+            PRIMARY_ACTION_BUTTON_STYLE,
+            relief=[("pressed", "sunken"), ("!pressed", "raised")],
+        )
+
+        # Some native Windows ttk themes ignore background colors for buttons.
+        if theme_name in {"clam", "alt", "default", "classic"}:
+            style.configure(
+                PRIMARY_ACTION_BUTTON_STYLE,
+                foreground="#FFFFFF",
+                background="#0A69C2",
+            )
+            style.map(
+                PRIMARY_ACTION_BUTTON_STYLE,
+                foreground=[("disabled", "#F3F3F3"), ("!disabled", "#FFFFFF")],
+                background=[
+                    ("disabled", "#A5A5A5"),
+                    ("pressed", "#084A88"),
+                    ("active", "#0D78DB"),
+                    ("!disabled", "#0A69C2"),
+                ],
+            )
+            return
+
+        style.map(
+            PRIMARY_ACTION_BUTTON_STYLE,
+            foreground=[("disabled", "#808080"), ("!disabled", "#111111")],
+        )
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -250,7 +296,12 @@ class VideoEditorApp:
         action_frame.columnconfigure(0, weight=1)
         action_frame.rowconfigure(1, weight=1)
 
-        self.run_button = ttk.Button(action_frame, text="Executar selecionados", command=self.run_selected)
+        self.run_button = ttk.Button(
+            action_frame,
+            text="Executar selecionados",
+            command=self.run_selected,
+            style=PRIMARY_ACTION_BUTTON_STYLE,
+        )
         self.run_button.grid(row=0, column=0, sticky="w")
         ttk.Label(action_frame, textvariable=self.status_var).grid(row=0, column=1, sticky="e")
 
@@ -1065,7 +1116,12 @@ class VideoEditorApp:
             variable=self.gpu_enabled_var,
         ).grid(row=0, column=5, sticky="w")
 
-        self.trim_run_button = ttk.Button(params_frame, text="Executar recorte", command=self.run_trim)
+        self.trim_run_button = ttk.Button(
+            params_frame,
+            text="Executar recorte",
+            command=self.run_trim,
+            style=PRIMARY_ACTION_BUTTON_STYLE,
+        )
         self.trim_run_button.grid(row=0, column=6, sticky="e")
 
         ttk.Label(params_frame, textvariable=self.trim_status_var).grid(
