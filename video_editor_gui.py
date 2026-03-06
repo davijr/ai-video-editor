@@ -117,6 +117,7 @@ class VideoEditorApp:
         self.drop_set_window_long: object | None = None
         self.drop_original_wndproc: int | None = None
         self.drop_wndproc_callback: object | None = None
+        self.drop_argtype: object | None = None
         self._setting_traces_registered = False
 
         self._load_execution_history()
@@ -949,105 +950,74 @@ class VideoEditorApp:
         if os.name != "nt":
             return
 
-        windll = getattr(ctypes, "windll", None)
-        if not windll:
-            return
+        try:
+            windll = getattr(ctypes, "windll", None)
+            if not windll:
+                return
 
-        shell32 = getattr(windll, "shell32", None)
-        user32 = getattr(windll, "user32", None)
-        if not shell32 or not user32:
-            return
+            shell32 = getattr(windll, "shell32", None)
+            user32 = getattr(windll, "user32", None)
+            if not shell32 or not user32:
+                return
 
-        hwnd = int(self.root.winfo_id())
-        if hwnd <= 0:
-            return
+            hwnd = int(self.root.winfo_id())
+            if hwnd <= 0:
+                return
 
-        get_window_long = getattr(user32, "GetWindowLongPtrW", None)
-        set_window_long = getattr(user32, "SetWindowLongPtrW", None)
-        if get_window_long is None or set_window_long is None:
-            get_window_long = user32.GetWindowLongW
-            set_window_long = user32.SetWindowLongW
+            is_64 = ctypes.sizeof(ctypes.c_void_p) == 8
+            argtype = ctypes.c_uint64 if is_64 else wintypes.DWORD
+            wndproc_type = ctypes.WINFUNCTYPE(argtype, argtype, argtype, argtype, argtype)
+            get_window_long = user32.GetWindowLongPtrA if is_64 else user32.GetWindowLongW
+            set_window_long = user32.SetWindowLongPtrA if is_64 else user32.SetWindowLongW
 
-        pointer_type = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
-        wndproc_type = ctypes.WINFUNCTYPE(
-            pointer_type,
-            wintypes.HWND,
-            wintypes.UINT,
-            wintypes.WPARAM,
-            wintypes.LPARAM,
-        )
+            original_wndproc = int(get_window_long(hwnd, GWL_WNDPROC))
+            if original_wndproc == 0:
+                return
 
-        shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
-        shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
-        shell32.DragQueryFileW.restype = wintypes.UINT
-        shell32.DragFinish.argtypes = [ctypes.c_void_p]
-        shell32.DragFinish.restype = None
-
-        get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
-        get_window_long.restype = pointer_type
-        set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, pointer_type]
-        set_window_long.restype = pointer_type
-
-        call_window_proc = user32.CallWindowProcW
-        call_window_proc.argtypes = [
-            ctypes.c_void_p,
-            wintypes.HWND,
-            wintypes.UINT,
-            wintypes.WPARAM,
-            wintypes.LPARAM,
-        ]
-        call_window_proc.restype = pointer_type
-
-        original_wndproc = int(get_window_long(hwnd, GWL_WNDPROC))
-        if original_wndproc == 0:
-            return
-
-        def _wndproc(
-            window_handle: int,
-            message: int,
-            w_param: int,
-            l_param: int,
-        ) -> int:
-            try:
-                if message == WM_DROPFILES:
-                    dropped_paths = self._query_drop_paths(int(w_param))
+            def _wndproc(
+                window_handle: int,
+                message: int,
+                w_param: int,
+                l_param: int,
+            ) -> int:
+                try:
+                    if message == WM_DROPFILES:
+                        dropped_paths = self._query_drop_paths(int(w_param))
+                        self.root.after(
+                            0,
+                            lambda paths=dropped_paths: self._handle_dropped_paths(paths),
+                        )
+                        return 0
+                except Exception as exc:
                     self.root.after(
                         0,
-                        lambda paths=dropped_paths: self._handle_dropped_paths(paths),
+                        lambda msg=str(exc): self._append_log(f"ERRO drag-and-drop: {msg}"),
                     )
-                    return 0
-            except Exception as exc:
-                self.root.after(
-                    0,
-                    lambda msg=str(exc): self._append_log(f"ERRO drag-and-drop: {msg}"),
-                )
 
-            return int(
-                call_window_proc(
-                    ctypes.c_void_p(original_wndproc),
-                    window_handle,
-                    message,
-                    w_param,
-                    l_param,
+                call_args = list(
+                    map(
+                        argtype,
+                        (self.drop_original_wndproc, window_handle, message, w_param, l_param),
+                    )
                 )
+                return int(user32.CallWindowProcW(*call_args))
+
+            wndproc_callback = wndproc_type(_wndproc)
+            set_window_long(hwnd, GWL_WNDPROC, ctypes.cast(wndproc_callback, ctypes.c_void_p).value)
+            shell32.DragAcceptFiles(hwnd, True)
+
+            self.drop_target_hwnd = hwnd
+            self.drop_shell32 = shell32
+            self.drop_set_window_long = set_window_long
+            self.drop_original_wndproc = int(original_wndproc)
+            self.drop_wndproc_callback = wndproc_callback
+            self.drop_argtype = argtype
+            self.root.bind("<Destroy>", self._on_root_destroy, add=True)
+            self._append_log(
+                "Arraste e solte videos ou pastas na janela para carregar a lista de input."
             )
-
-        wndproc_callback = wndproc_type(_wndproc)
-        new_wndproc_ptr = ctypes.cast(wndproc_callback, ctypes.c_void_p).value
-        if not new_wndproc_ptr:
-            return
-        set_window_long(hwnd, GWL_WNDPROC, new_wndproc_ptr)
-        shell32.DragAcceptFiles(hwnd, True)
-
-        self.drop_target_hwnd = hwnd
-        self.drop_shell32 = shell32
-        self.drop_set_window_long = set_window_long
-        self.drop_original_wndproc = int(original_wndproc)
-        self.drop_wndproc_callback = wndproc_callback
-        self.root.bind("<Destroy>", self._on_root_destroy, add=True)
-        self._append_log(
-            "Arraste e solte videos ou pastas na janela para carregar a lista de input."
-        )
+        except Exception as exc:
+            self._append_log(f"Aviso: drag-and-drop nativo desativado ({exc}).")
 
     def _teardown_native_file_drop(self) -> None:
         if os.name != "nt":
@@ -1067,6 +1037,7 @@ class VideoEditorApp:
             self.drop_set_window_long = None
             self.drop_original_wndproc = None
             self.drop_wndproc_callback = None
+            self.drop_argtype = None
 
     def _on_root_destroy(self, event: tk.Event[tk.Misc]) -> None:
         if event.widget is self.root:
