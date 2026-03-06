@@ -148,3 +148,7 @@ __pycache__/
 
 # Local verification artifacts
 .tmp_verify/
+
+# PyInstaller artifacts
+build/
+*.spec

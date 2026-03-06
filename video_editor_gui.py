@@ -20,9 +20,14 @@ class VideoEditorApp:
         self.output_dir_var = tk.StringVar(value=str(Path.cwd() / "output"))
         self.status_var = tk.StringVar(value="Pronto")
         self.overwrite_var = tk.BooleanVar(value=True)
+        self.profile_description_var = tk.StringVar(value="")
 
-        self.profile_labels = [profile.label for profile in PROFILES.values()]
-        self.profile_by_label = {profile.label: key for key, profile in PROFILES.items()}
+        self.profile_items = sorted(PROFILES.values(), key=lambda profile: profile.label.lower())
+        self.profile_labels = [profile.label for profile in self.profile_items]
+        self.profile_by_label = {profile.label: profile.key for profile in self.profile_items}
+        self.profile_description_by_label = {
+            profile.label: profile.description for profile in self.profile_items
+        }
         self.video_files: list[Path] = []
 
         self._build_ui()
@@ -68,12 +73,20 @@ class VideoEditorApp:
         self.profile_combo.grid(row=1, column=1, sticky="w", padx=6, pady=(8, 0))
         if self.profile_labels:
             self.profile_combo.set(self.profile_labels[0])
+            self._update_profile_description()
+        self.profile_combo.bind("<<ComboboxSelected>>", self._on_profile_changed)
 
         ttk.Checkbutton(
             settings_frame,
             text="Sobrescrever arquivos existentes",
             variable=self.overwrite_var,
         ).grid(row=1, column=2, sticky="w", pady=(8, 0))
+
+        ttk.Label(
+            settings_frame,
+            textvariable=self.profile_description_var,
+            wraplength=640,
+        ).grid(row=2, column=1, columnspan=2, sticky="w", padx=6, pady=(4, 0))
 
         list_controls = ttk.Frame(self.root, padding=(10, 0, 10, 0))
         list_controls.grid(row=2, column=0, sticky="ew")
@@ -148,6 +161,14 @@ class VideoEditorApp:
 
     def clear_selection(self) -> None:
         self.video_listbox.selection_clear(0, tk.END)
+
+    def _on_profile_changed(self, _event: object) -> None:
+        self._update_profile_description()
+
+    def _update_profile_description(self) -> None:
+        label = self.profile_combo.get()
+        description = self.profile_description_by_label.get(label, "")
+        self.profile_description_var.set(description)
 
     def run_selected(self) -> None:
         if not self.profile_combo.get():

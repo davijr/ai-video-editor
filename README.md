@@ -7,10 +7,13 @@ Projeto para editar videos de gameplay (Rocket League), com foco inicial em comp
 - Windows 11
 - Python 3.10+
 - `ffmpeg` instalado e disponivel no `PATH`
+- `pyinstaller` (instalado automaticamente pelo `build_exe.bat`)
 
 Documentacao oficial consultada:
 - FFmpeg: https://ffmpeg.org/documentation.html
+- FFmpeg filtros: https://ffmpeg.org/ffmpeg-filters.html
 - Python Tkinter: https://docs.python.org/3/library/tkinter.html
+- PyInstaller: https://www.pyinstaller.org/en/stable/usage.html
 
 ## Estrutura
 
@@ -19,6 +22,7 @@ Documentacao oficial consultada:
 - `profiles.py`: perfis de edicao disponiveis.
 - `processor.py`: integracao e execucao do FFmpeg.
 - `run_gui.bat`: inicializador rapido da interface.
+- `build_exe.bat`: gera executavel Windows da GUI (`.exe`).
 
 ## Script inicial (1 video)
 
@@ -50,10 +54,27 @@ Fluxo:
 5. Defina a pasta de saida.
 6. Clique em `Executar`.
 
-## Perfil inicial: WhatsApp
+## Perfis de edicao
 
-Perfil implementado:
+Perfis implementados:
 - Container: MP4
-- Video: `libx264`, `yuv420p`, `crf 27`, `preset medium`, `30 fps`, largura maxima 1280
-- Audio: `aac`, `128k`, estereo
-- `+faststart` para melhor reproducao em apps de mensagem
+- `whatsapp_mp4_h264_aac`: `libx264`, `crf 27`, max largura 1280, `aac 128k`, `faststart`
+- `whatsapp_small_540p`: arquivo mais leve (`960x540`, `crf 30`, `aac 96k`)
+- `instagram_reels_1080x1920`: vertical 9:16 (`scale+pad`, `30 fps`)
+- `youtube_shorts_1080x1920`: vertical 9:16 (`scale+pad`, `60 fps`)
+
+## Gerar executavel `.exe`
+
+Para empacotar a GUI em um unico executavel Windows:
+
+```powershell
+build_exe.bat
+```
+
+Saida esperada:
+
+- `dist\AIVideoEditor.exe`
+
+Observacoes:
+- O build usa `PyInstaller` com `--onefile --windowed`.
+- O `ffmpeg` continua sendo necessario no Windows de destino (PATH ou pasta padrao).
