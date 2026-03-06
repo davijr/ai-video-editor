@@ -99,6 +99,7 @@ class VideoEditorApp:
         self.available_gpu_encoders: list[str] = []
         self.history_lock = threading.Lock()
         self.processed_input_paths: set[str] = set()
+        self.tree_drag_anchor_item_id: str | None = None
         self._setting_traces_registered = False
 
         self._load_execution_history()
@@ -232,6 +233,9 @@ class VideoEditorApp:
         self.video_tree.column("modified_at", width=200, minwidth=180, anchor="center", stretch=False)
         self.video_tree.grid(row=0, column=0, sticky="nsew")
         self.video_tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+        self.video_tree.bind("<ButtonPress-1>", self._on_tree_button_press, add=True)
+        self.video_tree.bind("<B1-Motion>", self._on_tree_drag_motion, add=True)
+        self.video_tree.bind("<ButtonRelease-1>", self._on_tree_button_release, add=True)
 
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.video_tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -1053,6 +1057,45 @@ class VideoEditorApp:
 
     def _on_tree_selection_changed(self, _event: object) -> None:
         self._update_selected_count()
+
+    def _on_tree_button_press(self, event: tk.Event[tk.Misc]) -> str | None:
+        row_id = self.video_tree.identify_row(event.y)
+        self.tree_drag_anchor_item_id = row_id or None
+        return None
+
+    def _on_tree_drag_motion(self, event: tk.Event[tk.Misc]) -> str | None:
+        # Preserve default CTRL/SHIFT selection behavior from Tk.
+        state = int(getattr(event, "state", 0))
+        shift_pressed = bool(state & 0x0001)
+        ctrl_pressed = bool(state & 0x0004)
+        if shift_pressed or ctrl_pressed:
+            return None
+
+        if not self.tree_drag_anchor_item_id:
+            return None
+
+        current_row_id = self.video_tree.identify_row(event.y)
+        if not current_row_id:
+            return None
+
+        children = list(self.video_tree.get_children(""))
+        if self.tree_drag_anchor_item_id not in children or current_row_id not in children:
+            return None
+
+        start_index = children.index(self.tree_drag_anchor_item_id)
+        end_index = children.index(current_row_id)
+        if start_index <= end_index:
+            selected_range = children[start_index : end_index + 1]
+        else:
+            selected_range = children[end_index : start_index + 1]
+
+        self.video_tree.selection_set(selected_range)
+        self.video_tree.focus(current_row_id)
+        return "break"
+
+    def _on_tree_button_release(self, _event: tk.Event[tk.Misc]) -> str | None:
+        self.tree_drag_anchor_item_id = None
+        return None
 
     def _update_selected_count(self) -> None:
         selected = len(self.video_tree.selection())
