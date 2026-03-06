@@ -49,16 +49,38 @@ run_gui.bat
 Fluxo:
 1. Selecione a pasta de entrada.
 2. A lista de videos sera carregada.
-3. Selecione os videos desejados.
-4. Escolha o script/perfil pronto.
-5. Defina a pasta de saida.
-6. Use `Ver pasta` para abrir rapidamente o output no Explorer.
-7. Clique em `Executar`.
+3. Use ordenacao por nome/data e veja colunas com `#`, `Arquivo` e `Data/Hora`.
+4. Selecione os videos desejados (contador `Selecionados: X / Y`).
+5. Escolha o script/perfil pronto.
+6. Defina a pasta de saida.
+7. Use `Ver pasta` para abrir rapidamente o output no Explorer.
+8. Clique em `Executar`.
+
+A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas acoes:
+- selecionar entrada/output
+- atualizar lista
+- selecionar/limpar selecao
+- escolher perfil
+- executar processamento
+- criar atalho na area de trabalho
 
 No log de execucao, cada video mostra:
 - tamanho original
 - tamanho final
 - percentual de reducao (ou aumento)
+
+## Configuracao persistente do usuario
+
+Ao abrir/fechar novamente, a interface preserva parametros em:
+
+- `user_settings.json`
+
+Arquivo editavel manualmente, com campos:
+- `input_dir`
+- `output_dir`
+- `profile_key`
+- `sort_mode`
+- `overwrite`
 
 ## Perfis de edicao
 
@@ -84,3 +106,5 @@ Saida esperada:
 Observacoes:
 - O build usa `PyInstaller` com `--onefile --windowed`.
 - O `ffmpeg` continua sendo necessario no Windows de destino (PATH ou pasta padrao).
+- Para criar atalho na area de trabalho, o caminho recomendado e apos gerar o `.exe`.
+- Se o `.exe` nao existir, a GUI cria atalho com fallback para `run_gui.bat`.

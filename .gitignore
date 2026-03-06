@@ -149,6 +149,7 @@ __pycache__/
 # Local verification artifacts
 .tmp_verify/
 output/
+user_settings.json
 
 # PyInstaller artifacts
 build/

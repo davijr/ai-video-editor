@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 import threading
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -26,12 +30,20 @@ def format_size_change_label(percent: float) -> str:
     return f"Aumento: {abs(percent):.2f}%"
 
 
+def get_app_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
 class VideoEditorApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("AI Video Editor")
         self.root.geometry("980x680")
         self.root.minsize(900, 620)
+        self.config_path = get_app_base_dir() / "user_settings.json"
+        self.startup_warning: str | None = None
 
         self.input_dir_var = tk.StringVar(value="")
         self.output_dir_var = tk.StringVar(value=str(Path.cwd() / "output"))
@@ -45,9 +57,29 @@ class VideoEditorApp:
         self.profile_description_by_label = {
             profile.label: profile.description for profile in self.profile_items
         }
+        self.sort_options = {
+            "Nome (A-Z)": "name_asc",
+            "Nome (Z-A)": "name_desc",
+            "Data mais recente": "date_desc",
+            "Data mais antiga": "date_asc",
+        }
+        self.sort_label_by_mode = {mode: label for label, mode in self.sort_options.items()}
+        self.sort_labels = list(self.sort_options.keys())
+        self.sort_label_var = tk.StringVar(value=self.sort_labels[0])
+        self.profile_menu_var = tk.StringVar(
+            value=self.profile_labels[0] if self.profile_labels else ""
+        )
+        self.selected_count_var = tk.StringVar(value="Selecionados: 0 / 0")
         self.video_files: list[Path] = []
+        self.tree_id_to_path: dict[str, Path] = {}
+        self._setting_traces_registered = False
+
+        loaded_settings = self._load_user_settings()
+        self._apply_user_settings(loaded_settings)
 
         self._build_ui()
+        self._register_setting_traces()
+        self._save_user_settings()
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
@@ -92,7 +124,10 @@ class VideoEditorApp:
         )
         self.profile_combo.grid(row=1, column=1, sticky="w", padx=6, pady=(8, 0))
         if self.profile_labels:
-            self.profile_combo.set(self.profile_labels[0])
+            selected_label = self.profile_menu_var.get().strip() or self.profile_labels[0]
+            if selected_label not in self.profile_by_label:
+                selected_label = self.profile_labels[0]
+            self.profile_combo.set(selected_label)
             self._update_profile_description()
         self.profile_combo.bind("<<ComboboxSelected>>", self._on_profile_changed)
 
@@ -110,6 +145,7 @@ class VideoEditorApp:
 
         list_controls = ttk.Frame(self.root, padding=(10, 0, 10, 0))
         list_controls.grid(row=2, column=0, sticky="ew")
+        list_controls.columnconfigure(6, weight=1)
 
         ttk.Label(list_controls, text="Videos encontrados:").grid(row=0, column=0, sticky="w")
         ttk.Button(list_controls, text="Selecionar tudo", command=self.select_all).grid(
@@ -118,17 +154,43 @@ class VideoEditorApp:
         ttk.Button(list_controls, text="Limpar selecao", command=self.clear_selection).grid(
             row=0, column=2
         )
+        ttk.Label(list_controls, text="Ordenacao:").grid(row=0, column=3, padx=(14, 4), sticky="e")
+        self.sort_combo = ttk.Combobox(
+            list_controls,
+            values=self.sort_labels,
+            textvariable=self.sort_label_var,
+            state="readonly",
+            width=18,
+        )
+        self.sort_combo.grid(row=0, column=4, sticky="w")
+        self.sort_combo.bind("<<ComboboxSelected>>", self._on_sort_changed)
+        ttk.Label(list_controls, textvariable=self.selected_count_var).grid(
+            row=0, column=7, sticky="e"
+        )
 
         list_frame = ttk.Frame(self.root, padding=(10, 4, 10, 8))
         list_frame.grid(row=3, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
 
-        self.video_listbox = tk.Listbox(list_frame, selectmode=tk.EXTENDED)
-        self.video_listbox.grid(row=0, column=0, sticky="nsew")
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.video_listbox.yview)
+        self.video_tree = ttk.Treeview(
+            list_frame,
+            columns=("index", "filename", "modified_at"),
+            show="headings",
+            selectmode="extended",
+        )
+        self.video_tree.heading("index", text="#")
+        self.video_tree.heading("filename", text="Arquivo")
+        self.video_tree.heading("modified_at", text="Data/Hora")
+        self.video_tree.column("index", width=55, minwidth=45, anchor="center", stretch=False)
+        self.video_tree.column("filename", width=560, minwidth=260, anchor="w")
+        self.video_tree.column("modified_at", width=200, minwidth=180, anchor="center", stretch=False)
+        self.video_tree.grid(row=0, column=0, sticky="nsew")
+        self.video_tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
+
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.video_tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
-        self.video_listbox.configure(yscrollcommand=scrollbar.set)
+        self.video_tree.configure(yscrollcommand=scrollbar.set)
 
         action_frame = ttk.Frame(self.root, padding=(10, 0, 10, 8))
         action_frame.grid(row=4, column=0, sticky="nsew")
@@ -149,6 +211,216 @@ class VideoEditorApp:
         log_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
         log_scrollbar.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
+
+        self._build_menu()
+
+    def _build_menu(self) -> None:
+        menu_bar = tk.Menu(self.root)
+        self.root.configure(menu=menu_bar)
+
+        arquivo_menu = tk.Menu(menu_bar, tearoff=0)
+        arquivo_menu.add_command(label="Selecionar pasta de videos", command=self.choose_input_dir)
+        arquivo_menu.add_command(label="Atualizar lista de videos", command=self.refresh_video_list)
+        arquivo_menu.add_separator()
+        arquivo_menu.add_command(label="Selecionar pasta de output", command=self.choose_output_dir)
+        arquivo_menu.add_command(label="Ver pasta de output", command=self.open_output_dir)
+        arquivo_menu.add_separator()
+        arquivo_menu.add_command(
+            label="Criar atalho na area de trabalho",
+            command=self.create_desktop_shortcut,
+        )
+        arquivo_menu.add_separator()
+        arquivo_menu.add_command(label="Sair", command=self.root.destroy)
+        menu_bar.add_cascade(label="Arquivo", menu=arquivo_menu)
+
+        selecao_menu = tk.Menu(menu_bar, tearoff=0)
+        selecao_menu.add_command(label="Selecionar tudo", command=self.select_all)
+        selecao_menu.add_command(label="Limpar selecao", command=self.clear_selection)
+        ordenacao_menu = tk.Menu(selecao_menu, tearoff=0)
+        for sort_label in self.sort_labels:
+            ordenacao_menu.add_radiobutton(
+                label=sort_label,
+                value=sort_label,
+                variable=self.sort_label_var,
+                command=self._on_sort_mode_changed,
+            )
+        selecao_menu.add_cascade(label="Ordenar por", menu=ordenacao_menu)
+        menu_bar.add_cascade(label="Selecao", menu=selecao_menu)
+
+        processamento_menu = tk.Menu(menu_bar, tearoff=0)
+        processamento_menu.add_checkbutton(
+            label="Sobrescrever arquivos existentes",
+            variable=self.overwrite_var,
+        )
+
+        perfil_menu = tk.Menu(processamento_menu, tearoff=0)
+        for profile_label in self.profile_labels:
+            perfil_menu.add_radiobutton(
+                label=profile_label,
+                variable=self.profile_menu_var,
+                value=profile_label,
+                command=lambda label=profile_label: self._set_profile_label(label),
+            )
+        processamento_menu.add_cascade(label="Perfil", menu=perfil_menu)
+        processamento_menu.add_separator()
+        processamento_menu.add_command(label="Executar selecionados", command=self.run_selected)
+        menu_bar.add_cascade(label="Processamento", menu=processamento_menu)
+
+    def _register_setting_traces(self) -> None:
+        if self._setting_traces_registered:
+            return
+        self.input_dir_var.trace_add("write", self._on_setting_var_changed)
+        self.output_dir_var.trace_add("write", self._on_setting_var_changed)
+        self.overwrite_var.trace_add("write", self._on_setting_var_changed)
+        self.profile_menu_var.trace_add("write", self._on_setting_var_changed)
+        self.sort_label_var.trace_add("write", self._on_setting_var_changed)
+        self._setting_traces_registered = True
+
+    def _on_setting_var_changed(self, *_args: object) -> None:
+        self._save_user_settings()
+
+    def _load_user_settings(self) -> dict[str, object]:
+        if not self.config_path.exists():
+            return {}
+        try:
+            content = self.config_path.read_text(encoding="utf-8")
+            data = json.loads(content)
+        except OSError as exc:
+            self.startup_warning = f"Nao foi possivel ler config: {exc}"
+            return {}
+        except json.JSONDecodeError as exc:
+            self.startup_warning = f"Config invalida em {self.config_path.name}: {exc}"
+            return {}
+
+        if not isinstance(data, dict):
+            self.startup_warning = f"Config invalida em {self.config_path.name}: raiz deve ser objeto JSON."
+            return {}
+        return data
+
+    def _apply_user_settings(self, data: dict[str, object]) -> None:
+        input_dir = data.get("input_dir")
+        output_dir = data.get("output_dir")
+        overwrite = data.get("overwrite")
+        profile_key = data.get("profile_key")
+        sort_mode = data.get("sort_mode")
+
+        if isinstance(input_dir, str):
+            self.input_dir_var.set(input_dir)
+        if isinstance(output_dir, str):
+            self.output_dir_var.set(output_dir)
+        if isinstance(overwrite, bool):
+            self.overwrite_var.set(overwrite)
+
+        if isinstance(profile_key, str):
+            profile = PROFILES.get(profile_key)
+            if profile:
+                self.profile_menu_var.set(profile.label)
+        if isinstance(sort_mode, str):
+            sort_label = self.sort_label_by_mode.get(sort_mode)
+            if sort_label:
+                self.sort_label_var.set(sort_label)
+
+    def _save_user_settings(self) -> None:
+        profile_label = self.profile_menu_var.get().strip()
+        profile_key = self.profile_by_label.get(profile_label, "")
+        sort_mode = self.sort_options.get(self.sort_label_var.get().strip(), "name_asc")
+        data = {
+            "input_dir": self.input_dir_var.get().strip(),
+            "output_dir": self.output_dir_var.get().strip(),
+            "profile_key": profile_key,
+            "sort_mode": sort_mode,
+            "overwrite": bool(self.overwrite_var.get()),
+        }
+        try:
+            self.config_path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            self.startup_warning = f"Nao foi possivel salvar config: {exc}"
+
+    @staticmethod
+    def _ps_escape(value: str) -> str:
+        return value.replace("'", "''")
+
+    def _set_profile_label(self, label: str) -> None:
+        if label not in self.profile_by_label:
+            return
+        self.profile_combo.set(label)
+        self._update_profile_description()
+
+    def _get_desktop_path(self) -> Path:
+        command = ["powershell", "-NoProfile", "-Command", "[Environment]::GetFolderPath('Desktop')"]
+        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        if completed.returncode == 0 and completed.stdout.strip():
+            return Path(completed.stdout.strip())
+        return Path.home() / "Desktop"
+
+    def create_desktop_shortcut(self) -> None:
+        if os.name != "nt":
+            messagebox.showerror("Erro", "Este recurso requer Windows.")
+            return
+
+        base_dir = get_app_base_dir()
+        exe_candidates = [base_dir / "AIVideoEditor.exe", base_dir / "dist" / "AIVideoEditor.exe"]
+        exe_path = next((path for path in exe_candidates if path.exists() and path.is_file()), None)
+
+        batch_candidates = [base_dir / "run_gui.bat", base_dir.parent / "run_gui.bat"]
+        batch_path = next((path for path in batch_candidates if path.exists() and path.is_file()), None)
+
+        target_path = ""
+        arguments = ""
+        icon_location = ""
+        working_directory = str(base_dir)
+        guidance = ""
+
+        if exe_path:
+            target_path = str(exe_path.resolve())
+            icon_location = f"{target_path},0"
+            guidance = "Atalho criado para o executavel (.exe)."
+        elif batch_path:
+            command_shell = os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")
+            target_path = command_shell
+            arguments = f'/c "{batch_path.resolve()}"'
+            icon_location = f"{command_shell},0"
+            working_directory = str(batch_path.resolve().parent)
+            guidance = (
+                "Executavel nao encontrado. Atalho criado para run_gui.bat. "
+                "Recomendado recriar atalho apos gerar o .exe."
+            )
+        else:
+            messagebox.showerror("Erro", "Nao foi encontrado AIVideoEditor.exe nem run_gui.bat.")
+            return
+
+        desktop_dir = self._get_desktop_path()
+        desktop_dir.mkdir(parents=True, exist_ok=True)
+        shortcut_path = desktop_dir / "AI Video Editor.lnk"
+
+        ps_lines = [
+            "$WshShell = New-Object -ComObject WScript.Shell",
+            f"$Shortcut = $WshShell.CreateShortcut('{self._ps_escape(str(shortcut_path))}')",
+            f"$Shortcut.TargetPath = '{self._ps_escape(target_path)}'",
+            f"$Shortcut.WorkingDirectory = '{self._ps_escape(working_directory)}'",
+            f"$Shortcut.IconLocation = '{self._ps_escape(icon_location)}'",
+        ]
+        if arguments:
+            ps_lines.append(f"$Shortcut.Arguments = '{self._ps_escape(arguments)}'")
+        ps_lines.append("$Shortcut.Save()")
+        ps_script = "; ".join(ps_lines)
+
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            details = completed.stderr.strip() or completed.stdout.strip() or "Falha desconhecida."
+            messagebox.showerror("Erro", f"Nao foi possivel criar atalho:\n{details}")
+            return
+
+        self._append_log(f"Atalho criado: {shortcut_path}")
+        messagebox.showinfo("Atalho criado", f"{guidance}\n\nArquivo: {shortcut_path}")
 
     def choose_input_dir(self) -> None:
         selected = filedialog.askdirectory(title="Selecione a pasta de videos")
@@ -183,32 +455,70 @@ class VideoEditorApp:
         except OSError as exc:
             messagebox.showerror("Erro", f"Nao foi possivel abrir a pasta: {exc}")
 
+    def _on_sort_changed(self, _event: object) -> None:
+        self._on_sort_mode_changed()
+
+    def _on_sort_mode_changed(self) -> None:
+        self.refresh_video_list()
+
+    def _sorted_videos(self, videos: list[Path]) -> list[Path]:
+        sort_mode = self.sort_options.get(self.sort_label_var.get().strip(), "name_asc")
+        if sort_mode == "name_desc":
+            return sorted(videos, key=lambda path: path.name.lower(), reverse=True)
+        if sort_mode == "date_desc":
+            return sorted(videos, key=lambda path: path.stat().st_mtime, reverse=True)
+        if sort_mode == "date_asc":
+            return sorted(videos, key=lambda path: path.stat().st_mtime)
+        return sorted(videos, key=lambda path: path.name.lower())
+
+    def _on_tree_selection_changed(self, _event: object) -> None:
+        self._update_selected_count()
+
+    def _update_selected_count(self) -> None:
+        selected = len(self.video_tree.selection())
+        total = len(self.video_files)
+        self.selected_count_var.set(f"Selecionados: {selected} / {total}")
+
     def refresh_video_list(self) -> None:
         input_dir = self.input_dir_var.get().strip()
+        self.video_tree.delete(*self.video_tree.get_children())
+        self.tree_id_to_path = {}
+
         if not input_dir:
             self.video_files = []
-            self.video_listbox.delete(0, tk.END)
+            self._update_selected_count()
             return
 
-        self.video_files = list_videos(input_dir)
-        self.video_listbox.delete(0, tk.END)
-        for video_path in self.video_files:
-            self.video_listbox.insert(tk.END, video_path.name)
+        self.video_files = self._sorted_videos(list_videos(input_dir))
+        for index, video_path in enumerate(self.video_files, start=1):
+            modified_at = datetime.fromtimestamp(video_path.stat().st_mtime).strftime(
+                "%d/%m/%Y %H:%M:%S"
+            )
+            item_id = self.video_tree.insert(
+                "",
+                "end",
+                values=(index, video_path.name, modified_at),
+            )
+            self.tree_id_to_path[item_id] = video_path
 
         self.status_var.set(f"{len(self.video_files)} video(s) carregado(s)")
+        self._update_selected_count()
 
     def select_all(self) -> None:
         if self.video_files:
-            self.video_listbox.select_set(0, tk.END)
+            self.video_tree.selection_set(self.video_tree.get_children())
+        self._update_selected_count()
 
     def clear_selection(self) -> None:
-        self.video_listbox.selection_clear(0, tk.END)
+        self.video_tree.selection_remove(self.video_tree.selection())
+        self._update_selected_count()
 
     def _on_profile_changed(self, _event: object) -> None:
         self._update_profile_description()
 
     def _update_profile_description(self) -> None:
         label = self.profile_combo.get()
+        self.profile_menu_var.set(label)
         description = self.profile_description_by_label.get(label, "")
         self.profile_description_var.set(description)
 
@@ -226,12 +536,19 @@ class VideoEditorApp:
             messagebox.showerror("Erro", "Selecione a pasta de output.")
             return
 
-        selected_indices = self.video_listbox.curselection()
-        if not selected_indices:
+        selected_item_ids = self.video_tree.selection()
+        if not selected_item_ids:
             messagebox.showerror("Erro", "Selecione ao menos um video.")
             return
 
-        selected_files = [self.video_files[index] for index in selected_indices]
+        selected_files = [
+            self.tree_id_to_path[item_id]
+            for item_id in selected_item_ids
+            if item_id in self.tree_id_to_path
+        ]
+        if not selected_files:
+            messagebox.showerror("Erro", "Nao foi possivel mapear os videos selecionados.")
+            return
         profile_key = self.profile_by_label[self.profile_combo.get()]
 
         self.run_button.configure(state="disabled")
@@ -298,6 +615,8 @@ def main() -> None:
     root = tk.Tk()
     app = VideoEditorApp(root)
     try:
+        if app.startup_warning:
+            messagebox.showwarning("Configuracao", app.startup_warning)
         app.refresh_video_list()
         root.mainloop()
     except FFmpegNotFoundError as exc:
