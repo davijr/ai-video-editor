@@ -6,6 +6,8 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import ctypes
+from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -419,9 +421,34 @@ class VideoEditorApp:
         self._update_profile_description()
 
     def _get_desktop_path(self) -> Path:
+        # CSIDL_DESKTOPDIRECTORY (0x0010): desktop fisico do usuario atual.
+        shell32 = getattr(ctypes, "windll", None)
+        if shell32 and hasattr(shell32, "shell32"):
+            try:
+                buffer = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+                csidl_desktopdirectory = 0x0010
+                result = shell32.shell32.SHGetFolderPathW(
+                    None,
+                    csidl_desktopdirectory,
+                    None,
+                    0,
+                    buffer,
+                )
+                if result == 0 and buffer.value:
+                    return Path(buffer.value)
+            except Exception:
+                pass
+
         command = ["powershell", "-NoProfile", "-Command", "[Environment]::GetFolderPath('Desktop')"]
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
-        if completed.returncode == 0 and completed.stdout.strip():
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if completed.returncode == 0 and completed.stdout and completed.stdout.strip():
             return Path(completed.stdout.strip())
         return Path.home() / "Desktop"
 
