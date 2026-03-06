@@ -54,7 +54,7 @@ run_gui.bat
 Fluxo:
 1. Selecione a pasta de entrada.
 2. A lista de videos sera carregada.
-3. Use ordenacao por nome/data e veja colunas com `#`, `Arquivo` e `Data/Hora`.
+3. Use ordenacao por nome/data e veja colunas com `#`, `Processado`, `Arquivo` e `Data/Hora`.
 4. Selecione os videos desejados (contador `Selecionados: X / Y`).
 5. Escolha o script/perfil pronto.
 6. Defina a pasta de saida.
@@ -109,6 +109,16 @@ No log de execucao, cada video mostra:
 - tamanho original
 - tamanho final
 - percentual de reducao (ou aumento)
+
+## Historico de execucoes
+
+Cada execucao de compactacao e recorte e registrada em:
+
+- `execution_history.jsonl`
+
+Uso no app:
+- A coluna `Processado` indica `Sim` quando aquele arquivo de entrada ja foi processado com sucesso em alguma execucao anterior.
+- O indicador e apenas informativo e nao bloqueia reprocessamento.
 
 ## Configuracao persistente do usuario
 

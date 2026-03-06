@@ -8,7 +8,7 @@ import threading
 import tkinter as tk
 import ctypes
 from ctypes import wintypes
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -54,6 +54,7 @@ class VideoEditorApp:
         self.root.geometry("980x680")
         self.root.minsize(900, 620)
         self.config_path = get_app_base_dir() / "user_settings.json"
+        self.history_path = get_app_base_dir() / "execution_history.jsonl"
         self.startup_warning: str | None = None
 
         self.input_dir_var = tk.StringVar(value="")
@@ -96,8 +97,11 @@ class VideoEditorApp:
         self.trim_log_text: tk.Text | None = None
         self.trim_run_button: ttk.Button | None = None
         self.available_gpu_encoders: list[str] = []
+        self.history_lock = threading.Lock()
+        self.processed_input_paths: set[str] = set()
         self._setting_traces_registered = False
 
+        self._load_execution_history()
         loaded_settings = self._load_user_settings()
         self._apply_user_settings(loaded_settings)
 
@@ -214,15 +218,17 @@ class VideoEditorApp:
 
         self.video_tree = ttk.Treeview(
             list_frame,
-            columns=("index", "filename", "modified_at"),
+            columns=("index", "processed", "filename", "modified_at"),
             show="headings",
             selectmode="extended",
         )
         self.video_tree.heading("index", text="#")
+        self.video_tree.heading("processed", text="Processado")
         self.video_tree.heading("filename", text="Arquivo")
         self.video_tree.heading("modified_at", text="Data/Hora")
         self.video_tree.column("index", width=55, minwidth=45, anchor="center", stretch=False)
-        self.video_tree.column("filename", width=560, minwidth=260, anchor="w")
+        self.video_tree.column("processed", width=90, minwidth=80, anchor="center", stretch=False)
+        self.video_tree.column("filename", width=510, minwidth=220, anchor="w")
         self.video_tree.column("modified_at", width=200, minwidth=180, anchor="center", stretch=False)
         self.video_tree.grid(row=0, column=0, sticky="nsew")
         self.video_tree.bind("<<TreeviewSelect>>", self._on_tree_selection_changed)
@@ -375,14 +381,16 @@ class VideoEditorApp:
             content = self.config_path.read_text(encoding="utf-8")
             data = json.loads(content)
         except OSError as exc:
-            self.startup_warning = f"Nao foi possivel ler config: {exc}"
+            self._add_startup_warning(f"Nao foi possivel ler config: {exc}")
             return {}
         except json.JSONDecodeError as exc:
-            self.startup_warning = f"Config invalida em {self.config_path.name}: {exc}"
+            self._add_startup_warning(f"Config invalida em {self.config_path.name}: {exc}")
             return {}
 
         if not isinstance(data, dict):
-            self.startup_warning = f"Config invalida em {self.config_path.name}: raiz deve ser objeto JSON."
+            self._add_startup_warning(
+                f"Config invalida em {self.config_path.name}: raiz deve ser objeto JSON."
+            )
             return {}
         return data
 
@@ -450,7 +458,111 @@ class VideoEditorApp:
                 encoding="utf-8",
             )
         except OSError as exc:
-            self.startup_warning = f"Nao foi possivel salvar config: {exc}"
+            self._add_startup_warning(f"Nao foi possivel salvar config: {exc}")
+
+    def _add_startup_warning(self, message: str) -> None:
+        if self.startup_warning:
+            self.startup_warning = f"{self.startup_warning}\n{message}"
+            return
+        self.startup_warning = message
+
+    @staticmethod
+    def _normalize_history_path(path_value: str | Path) -> str:
+        path = Path(path_value)
+        try:
+            return str(path.resolve()).lower()
+        except OSError:
+            return str(path.absolute()).lower()
+
+    def _load_execution_history(self) -> None:
+        if not self.history_path.exists():
+            return
+
+        invalid_lines = 0
+        try:
+            content = self.history_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            self._add_startup_warning(f"Nao foi possivel ler historico de execucao: {exc}")
+            return
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                invalid_lines += 1
+                continue
+
+            if not isinstance(entry, dict):
+                invalid_lines += 1
+                continue
+
+            if entry.get("status") != "success":
+                continue
+            input_path = entry.get("input_path")
+            if not isinstance(input_path, str) or not input_path:
+                continue
+
+            self.processed_input_paths.add(self._normalize_history_path(input_path))
+
+        if invalid_lines > 0:
+            self._add_startup_warning(
+                f"Historico de execucao carregado com {invalid_lines} linha(s) invalida(s)."
+            )
+
+    def _append_execution_history(self, entry: dict[str, object]) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        payload = {
+            "timestamp_utc": timestamp,
+            **entry,
+        }
+        serialized = json.dumps(payload, ensure_ascii=True)
+        try:
+            with self.history_lock:
+                with self.history_path.open("a", encoding="utf-8") as history_file:
+                    history_file.write(serialized + "\n")
+        except OSError as exc:
+            self.root.after(
+                0,
+                lambda msg=str(exc): self._append_log(
+                    f"ERRO -> Nao foi possivel registrar historico: {msg}"
+                ),
+            )
+
+    def _build_history_base_entry(
+        self,
+        mode: str,
+        status: str,
+        input_path: Path,
+        output_path: Path | None,
+        use_gpu: bool,
+        gpu_encoder: str | None,
+        error_message: str | None,
+    ) -> dict[str, object]:
+        return {
+            "mode": mode,
+            "status": status,
+            "input_path": str(input_path.resolve()),
+            "output_path": str(output_path.resolve()) if output_path else "",
+            "use_gpu": use_gpu,
+            "gpu_encoder": gpu_encoder or "",
+            "error_message": error_message or "",
+        }
+
+    def _mark_input_as_processed(self, input_path: Path) -> None:
+        normalized = self._normalize_history_path(input_path)
+        self.processed_input_paths.add(normalized)
+
+        for item_id, tree_path in self.tree_id_to_path.items():
+            if self._normalize_history_path(tree_path) != normalized:
+                continue
+            values = list(self.video_tree.item(item_id, "values"))
+            if len(values) < 4:
+                continue
+            values[1] = "Sim"
+            self.video_tree.item(item_id, values=tuple(values))
 
     def _refresh_gpu_status(self) -> None:
         try:
@@ -844,6 +956,29 @@ class VideoEditorApp:
                 use_gpu=use_gpu,
                 gpu_encoder=gpu_encoder,
             )
+            history_entry = self._build_history_base_entry(
+                mode="trim",
+                status="success",
+                input_path=input_file,
+                output_path=result.output_path,
+                use_gpu=use_gpu,
+                gpu_encoder=result.gpu_encoder,
+                error_message=None,
+            )
+            history_entry.update(
+                {
+                    "trim_start_seconds": trim_start_seconds,
+                    "trim_end_seconds": trim_end_seconds,
+                    "overwrite": overwrite,
+                    "original_duration_seconds": result.original_duration_seconds,
+                    "output_duration_seconds": result.output_duration_seconds,
+                    "original_size_bytes": result.original_size_bytes,
+                    "output_size_bytes": result.output_size_bytes,
+                    "size_reduction_percent": result.size_reduction_percent,
+                }
+            )
+            self._append_execution_history(history_entry)
+            self.root.after(0, lambda p=input_file: self._mark_input_as_processed(p))
             size_summary = (
                 f"Original: {format_bytes(result.original_size_bytes)} | "
                 f"Final: {format_bytes(result.output_size_bytes)} | "
@@ -864,6 +999,23 @@ class VideoEditorApp:
             )
             self.root.after(0, lambda: self.trim_status_var.set("Recorte concluido com sucesso."))
         except (FFmpegNotFoundError, VideoProcessingError, FileNotFoundError, ValueError) as exc:
+            history_entry = self._build_history_base_entry(
+                mode="trim",
+                status="error",
+                input_path=input_file,
+                output_path=None,
+                use_gpu=use_gpu,
+                gpu_encoder=gpu_encoder,
+                error_message=str(exc),
+            )
+            history_entry.update(
+                {
+                    "trim_start_seconds": trim_start_seconds,
+                    "trim_end_seconds": trim_end_seconds,
+                    "overwrite": overwrite,
+                }
+            )
+            self._append_execution_history(history_entry)
             self.root.after(0, lambda msg=str(exc): self._append_trim_log(f"ERRO -> {msg}"))
             self.root.after(0, lambda: self.trim_status_var.set("Falha no recorte."))
         finally:
@@ -922,10 +1074,15 @@ class VideoEditorApp:
             modified_at = datetime.fromtimestamp(video_path.stat().st_mtime).strftime(
                 "%d/%m/%Y %H:%M:%S"
             )
+            processed_label = (
+                "Sim"
+                if self._normalize_history_path(video_path) in self.processed_input_paths
+                else "Nao"
+            )
             item_id = self.video_tree.insert(
                 "",
                 "end",
-                values=(index, video_path.name, modified_at),
+                values=(index, processed_label, video_path.name, modified_at),
             )
             self.tree_id_to_path[item_id] = video_path
 
@@ -1034,6 +1191,26 @@ class VideoEditorApp:
                     use_gpu=use_gpu,
                     gpu_encoder=gpu_encoder,
                 )
+                history_entry = self._build_history_base_entry(
+                    mode="compress",
+                    status="success",
+                    input_path=input_file,
+                    output_path=result.output_path,
+                    use_gpu=use_gpu,
+                    gpu_encoder=result.gpu_encoder,
+                    error_message=None,
+                )
+                history_entry.update(
+                    {
+                        "profile_key": profile_key,
+                        "overwrite": overwrite,
+                        "original_size_bytes": result.original_size_bytes,
+                        "output_size_bytes": result.output_size_bytes,
+                        "size_reduction_percent": result.size_reduction_percent,
+                    }
+                )
+                self._append_execution_history(history_entry)
+                self.root.after(0, lambda p=input_file: self._mark_input_as_processed(p))
                 success_count += 1
                 size_summary = (
                     f"Original: {format_bytes(result.original_size_bytes)} | "
@@ -1050,6 +1227,22 @@ class VideoEditorApp:
                     ),
                 )
             except (FFmpegNotFoundError, VideoProcessingError, FileNotFoundError, ValueError) as exc:
+                history_entry = self._build_history_base_entry(
+                    mode="compress",
+                    status="error",
+                    input_path=input_file,
+                    output_path=None,
+                    use_gpu=use_gpu,
+                    gpu_encoder=gpu_encoder,
+                    error_message=str(exc),
+                )
+                history_entry.update(
+                    {
+                        "profile_key": profile_key,
+                        "overwrite": overwrite,
+                    }
+                )
+                self._append_execution_history(history_entry)
                 error_count += 1
                 self.root.after(0, lambda msg=str(exc): self._append_log(f"ERRO -> {msg}"))
 

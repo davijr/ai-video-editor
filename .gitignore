@@ -150,6 +150,7 @@ __pycache__/
 .tmp_verify/
 output/
 user_settings.json
+execution_history.jsonl
 
 # PyInstaller artifacts
 build/
