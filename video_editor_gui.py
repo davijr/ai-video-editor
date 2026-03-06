@@ -117,7 +117,6 @@ class VideoEditorApp:
         self.drop_set_window_long: object | None = None
         self.drop_original_wndproc: int | None = None
         self.drop_wndproc_callback: object | None = None
-        self.drop_call_window_proc: object | None = None
         self._setting_traces_registered = False
 
         self._load_execution_history()
@@ -985,9 +984,9 @@ class VideoEditorApp:
         shell32.DragFinish.restype = None
 
         get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
-        get_window_long.restype = ctypes.c_void_p
-        set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
-        set_window_long.restype = ctypes.c_void_p
+        get_window_long.restype = pointer_type
+        set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, pointer_type]
+        set_window_long.restype = pointer_type
 
         call_window_proc = user32.CallWindowProcW
         call_window_proc.argtypes = [
@@ -999,8 +998,8 @@ class VideoEditorApp:
         ]
         call_window_proc.restype = pointer_type
 
-        original_wndproc = get_window_long(hwnd, GWL_WNDPROC)
-        if not original_wndproc:
+        original_wndproc = int(get_window_long(hwnd, GWL_WNDPROC))
+        if original_wndproc == 0:
             return
 
         def _wndproc(
@@ -1009,27 +1008,42 @@ class VideoEditorApp:
             w_param: int,
             l_param: int,
         ) -> int:
-            if message == WM_DROPFILES:
-                dropped_paths = self._query_drop_paths(int(w_param))
+            try:
+                if message == WM_DROPFILES:
+                    dropped_paths = self._query_drop_paths(int(w_param))
+                    self.root.after(
+                        0,
+                        lambda paths=dropped_paths: self._handle_dropped_paths(paths),
+                    )
+                    return 0
+            except Exception as exc:
                 self.root.after(
                     0,
-                    lambda paths=dropped_paths: self._handle_dropped_paths(paths),
+                    lambda msg=str(exc): self._append_log(f"ERRO drag-and-drop: {msg}"),
                 )
-                return 0
 
-            return int(call_window_proc(original_wndproc, window_handle, message, w_param, l_param))
+            return int(
+                call_window_proc(
+                    ctypes.c_void_p(original_wndproc),
+                    window_handle,
+                    message,
+                    w_param,
+                    l_param,
+                )
+            )
 
         wndproc_callback = wndproc_type(_wndproc)
-        new_wndproc_ptr = ctypes.cast(wndproc_callback, ctypes.c_void_p)
+        new_wndproc_ptr = ctypes.cast(wndproc_callback, ctypes.c_void_p).value
+        if not new_wndproc_ptr:
+            return
         set_window_long(hwnd, GWL_WNDPROC, new_wndproc_ptr)
         shell32.DragAcceptFiles(hwnd, True)
 
         self.drop_target_hwnd = hwnd
         self.drop_shell32 = shell32
         self.drop_set_window_long = set_window_long
-        self.drop_original_wndproc = int(original_wndproc or 0)
+        self.drop_original_wndproc = int(original_wndproc)
         self.drop_wndproc_callback = wndproc_callback
-        self.drop_call_window_proc = call_window_proc
         self.root.bind("<Destroy>", self._on_root_destroy, add=True)
         self._append_log(
             "Arraste e solte videos ou pastas na janela para carregar a lista de input."
@@ -1053,7 +1067,6 @@ class VideoEditorApp:
             self.drop_set_window_long = None
             self.drop_original_wndproc = None
             self.drop_wndproc_callback = None
-            self.drop_call_window_proc = None
 
     def _on_root_destroy(self, event: tk.Event[tk.Misc]) -> None:
         if event.widget is self.root:
