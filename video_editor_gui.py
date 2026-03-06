@@ -48,6 +48,8 @@ def get_app_base_dir() -> Path:
 
 
 PRIMARY_ACTION_BUTTON_STYLE = "PrimaryAction.TButton"
+WM_DROPFILES = 0x0233
+GWL_WNDPROC = -4
 
 
 class VideoEditorApp:
@@ -95,7 +97,9 @@ class VideoEditorApp:
             value=self.profile_labels[0] if self.profile_labels else ""
         )
         self.selected_count_var = tk.StringVar(value="Selecionados: 0 / 0")
+        self.input_source_var = tk.StringVar(value="Fonte: pasta selecionada")
         self.video_files: list[Path] = []
+        self.dropped_input_files: list[Path] | None = None
         self.tree_id_to_path: dict[str, Path] = {}
         self.trim_window: tk.Toplevel | None = None
         self.trim_log_text: tk.Text | None = None
@@ -108,6 +112,12 @@ class VideoEditorApp:
         self.processed_history_count_var = tk.StringVar(value="Processados: 0")
         self.processed_history_tree: ttk.Treeview | None = None
         self.tree_drag_anchor_item_id: str | None = None
+        self.drop_target_hwnd: int | None = None
+        self.drop_shell32: object | None = None
+        self.drop_set_window_long: object | None = None
+        self.drop_original_wndproc: int | None = None
+        self.drop_wndproc_callback: object | None = None
+        self.drop_call_window_proc: object | None = None
         self._setting_traces_registered = False
 
         self._load_execution_history()
@@ -116,6 +126,7 @@ class VideoEditorApp:
 
         self._configure_styles()
         self._build_ui()
+        self._setup_native_file_drop()
         self._refresh_gpu_status()
         self._register_setting_traces()
         self._save_user_settings()
@@ -180,6 +191,10 @@ class VideoEditorApp:
         ttk.Button(input_frame, text="Atualizar lista", command=self.refresh_video_list).grid(
             row=0, column=3, sticky="e", padx=(6, 0)
         )
+        ttk.Label(
+            input_frame,
+            textvariable=self.input_source_var,
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         settings_frame = ttk.Frame(self.root, padding=(10, 0, 10, 8))
         settings_frame.grid(row=1, column=0, sticky="ew")
@@ -931,6 +946,203 @@ class VideoEditorApp:
     def _ps_escape(value: str) -> str:
         return value.replace("'", "''")
 
+    def _setup_native_file_drop(self) -> None:
+        if os.name != "nt":
+            return
+
+        windll = getattr(ctypes, "windll", None)
+        if not windll:
+            return
+
+        shell32 = getattr(windll, "shell32", None)
+        user32 = getattr(windll, "user32", None)
+        if not shell32 or not user32:
+            return
+
+        hwnd = int(self.root.winfo_id())
+        if hwnd <= 0:
+            return
+
+        get_window_long = getattr(user32, "GetWindowLongPtrW", None)
+        set_window_long = getattr(user32, "SetWindowLongPtrW", None)
+        if get_window_long is None or set_window_long is None:
+            get_window_long = user32.GetWindowLongW
+            set_window_long = user32.SetWindowLongW
+
+        pointer_type = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
+        wndproc_type = ctypes.WINFUNCTYPE(
+            pointer_type,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        )
+
+        shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
+        shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+        shell32.DragQueryFileW.restype = wintypes.UINT
+        shell32.DragFinish.argtypes = [ctypes.c_void_p]
+        shell32.DragFinish.restype = None
+
+        get_window_long.argtypes = [wintypes.HWND, ctypes.c_int]
+        get_window_long.restype = ctypes.c_void_p
+        set_window_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        set_window_long.restype = ctypes.c_void_p
+
+        call_window_proc = user32.CallWindowProcW
+        call_window_proc.argtypes = [
+            ctypes.c_void_p,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        call_window_proc.restype = pointer_type
+
+        original_wndproc = get_window_long(hwnd, GWL_WNDPROC)
+        if not original_wndproc:
+            return
+
+        def _wndproc(
+            window_handle: int,
+            message: int,
+            w_param: int,
+            l_param: int,
+        ) -> int:
+            if message == WM_DROPFILES:
+                dropped_paths = self._query_drop_paths(int(w_param))
+                self.root.after(
+                    0,
+                    lambda paths=dropped_paths: self._handle_dropped_paths(paths),
+                )
+                return 0
+
+            return int(call_window_proc(original_wndproc, window_handle, message, w_param, l_param))
+
+        wndproc_callback = wndproc_type(_wndproc)
+        new_wndproc_ptr = ctypes.cast(wndproc_callback, ctypes.c_void_p)
+        set_window_long(hwnd, GWL_WNDPROC, new_wndproc_ptr)
+        shell32.DragAcceptFiles(hwnd, True)
+
+        self.drop_target_hwnd = hwnd
+        self.drop_shell32 = shell32
+        self.drop_set_window_long = set_window_long
+        self.drop_original_wndproc = int(original_wndproc or 0)
+        self.drop_wndproc_callback = wndproc_callback
+        self.drop_call_window_proc = call_window_proc
+        self.root.bind("<Destroy>", self._on_root_destroy, add=True)
+        self._append_log(
+            "Arraste e solte videos ou pastas na janela para carregar a lista de input."
+        )
+
+    def _teardown_native_file_drop(self) -> None:
+        if os.name != "nt":
+            return
+        if not self.drop_target_hwnd or not self.drop_set_window_long or not self.drop_original_wndproc:
+            return
+
+        try:
+            if self.drop_shell32:
+                self.drop_shell32.DragAcceptFiles(self.drop_target_hwnd, False)
+            self.drop_set_window_long(self.drop_target_hwnd, GWL_WNDPROC, self.drop_original_wndproc)
+        except Exception:
+            pass
+        finally:
+            self.drop_target_hwnd = None
+            self.drop_shell32 = None
+            self.drop_set_window_long = None
+            self.drop_original_wndproc = None
+            self.drop_wndproc_callback = None
+            self.drop_call_window_proc = None
+
+    def _on_root_destroy(self, event: tk.Event[tk.Misc]) -> None:
+        if event.widget is self.root:
+            self._teardown_native_file_drop()
+
+    def _query_drop_paths(self, handle: int) -> list[Path]:
+        if not self.drop_shell32:
+            return []
+
+        paths: list[Path] = []
+        try:
+            count = int(self.drop_shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0))
+            for index in range(count):
+                length = int(self.drop_shell32.DragQueryFileW(handle, index, None, 0))
+                if length <= 0:
+                    continue
+                buffer = ctypes.create_unicode_buffer(length + 1)
+                self.drop_shell32.DragQueryFileW(handle, index, buffer, length + 1)
+                value = buffer.value.strip()
+                if value:
+                    paths.append(Path(value))
+        finally:
+            self.drop_shell32.DragFinish(handle)
+
+        return paths
+
+    def _handle_dropped_paths(self, dropped_paths: list[Path]) -> None:
+        if not dropped_paths:
+            return
+
+        folders: list[Path] = []
+        explicit_videos: list[Path] = []
+        collected_videos: list[Path] = []
+        ignored_paths: list[Path] = []
+
+        for raw_path in dropped_paths:
+            try:
+                path = raw_path.resolve()
+            except OSError:
+                path = raw_path.absolute()
+
+            if path.is_dir():
+                folders.append(path)
+                collected_videos.extend(list_videos(path))
+                continue
+
+            if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
+                explicit_videos.append(path)
+                collected_videos.append(path)
+                continue
+
+            ignored_paths.append(path)
+
+        unique_by_path: dict[str, Path] = {}
+        for video_path in collected_videos:
+            unique_by_path[self._normalize_history_path(video_path)] = video_path
+        unique_videos = list(unique_by_path.values())
+
+        if not unique_videos:
+            messagebox.showerror(
+                "Erro",
+                "Nenhum video valido foi detectado no arrastar e soltar.",
+            )
+            return
+
+        # Single folder drop keeps the current folder-based workflow.
+        if len(dropped_paths) == 1 and len(folders) == 1 and not explicit_videos:
+            folder = folders[0]
+            self.dropped_input_files = None
+            self.input_source_var.set("Fonte: pasta (arrastar e soltar)")
+            self.input_dir_var.set(str(folder))
+            self.refresh_video_list()
+            self._append_log(
+                f"Arrastar/soltar -> pasta carregada: {folder} ({len(self.video_files)} video(s))."
+            )
+        else:
+            self.dropped_input_files = unique_videos
+            self.input_source_var.set("Fonte: lista de arquivos (arrastar e soltar)")
+            self.input_dir_var.set("")
+            self.refresh_video_list()
+            self._append_log(
+                f"Arrastar/soltar -> {len(self.video_files)} video(s) carregado(s) na lista."
+            )
+
+        if ignored_paths:
+            self._append_log(
+                f"Aviso: {len(ignored_paths)} item(ns) ignorado(s) por nao serem videos validos."
+            )
+
     def _set_profile_label(self, label: str) -> None:
         if label not in self.profile_by_label:
             return
@@ -1352,6 +1564,8 @@ class VideoEditorApp:
     def choose_input_dir(self) -> None:
         selected = filedialog.askdirectory(title="Selecione a pasta de videos")
         if selected:
+            self.dropped_input_files = None
+            self.input_source_var.set("Fonte: pasta selecionada")
             self.input_dir_var.set(selected)
             self.refresh_video_list()
 
@@ -1431,12 +1645,22 @@ class VideoEditorApp:
         self.video_tree.delete(*self.video_tree.get_children())
         self.tree_id_to_path = {}
 
-        if not input_dir:
-            self.video_files = []
-            self._update_selected_count()
-            return
+        if self.dropped_input_files is not None:
+            valid_drop_videos = [
+                path
+                for path in self.dropped_input_files
+                if path.exists() and path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS
+            ]
+            self.video_files = self._sorted_videos(valid_drop_videos)
+            self.input_source_var.set("Fonte: lista de arquivos (arrastar e soltar)")
+        else:
+            if not input_dir:
+                self.video_files = []
+                self._update_selected_count()
+                return
+            self.video_files = self._sorted_videos(list_videos(input_dir))
+            self.input_source_var.set("Fonte: pasta selecionada")
 
-        self.video_files = self._sorted_videos(list_videos(input_dir))
         for index, video_path in enumerate(self.video_files, start=1):
             modified_at = datetime.fromtimestamp(video_path.stat().st_mtime).strftime(
                 "%d/%m/%Y %H:%M:%S"
@@ -1479,13 +1703,15 @@ class VideoEditorApp:
             messagebox.showerror("Erro", "Nenhum perfil disponivel.")
             return
 
-        input_dir = self.input_dir_var.get().strip()
         output_dir = self.output_dir_var.get().strip()
-        if not input_dir:
-            messagebox.showerror("Erro", "Selecione a pasta de videos.")
-            return
         if not output_dir:
             messagebox.showerror("Erro", "Selecione a pasta de output.")
+            return
+        if not self.video_files:
+            messagebox.showerror(
+                "Erro",
+                "Nenhum video foi carregado. Selecione uma pasta ou arraste e solte videos na interface.",
+            )
             return
 
         selected_item_ids = self.video_tree.selection()

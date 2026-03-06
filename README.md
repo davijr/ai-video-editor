@@ -54,13 +54,17 @@ run_gui.bat
 Fluxo:
 1. Selecione a pasta de entrada.
 2. A lista de videos sera carregada.
-3. Use ordenacao por nome/data e veja colunas com `#`, `Processado`, `Arquivo` e `Data/Hora`.
-4. Selecione os videos desejados (contador `Selecionados: X / Y`).
-5. Escolha o script/perfil pronto.
-6. Defina a pasta de saida.
-7. Ative/desative `Usar GPU (aceleracao)` quando desejar.
-8. Use `Ver pasta` para abrir rapidamente o output no Explorer.
-9. Clique em `Executar`.
+3. Opcional: arraste e solte na janela:
+   - uma pasta (carrega videos da pasta),
+   - varios videos selecionados,
+   - ou apenas um video.
+4. Use ordenacao por nome/data e veja colunas com `#`, `Processado`, `Arquivo` e `Data/Hora`.
+5. Selecione os videos desejados (contador `Selecionados: X / Y`).
+6. Escolha o script/perfil pronto.
+7. Defina a pasta de saida.
+8. Ative/desative `Usar GPU (aceleracao)` quando desejar.
+9. Use `Ver pasta` para abrir rapidamente o output no Explorer.
+10. Clique em `Executar`.
 
 A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas acoes:
 - selecionar entrada/output
