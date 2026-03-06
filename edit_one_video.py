@@ -8,6 +8,16 @@ from processor import FFmpegNotFoundError, VideoProcessingError, process_video
 from profiles import list_profile_keys
 
 
+def format_bytes(size: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.2f} {unit}"
+        value /= 1024.0
+    return f"{size} B"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Edita um unico video usando um script/perfil pre-definido."
@@ -56,6 +66,12 @@ def main() -> int:
     print("Processamento concluido com sucesso.")
     print(f"Entrada: {result.input_path}")
     print(f"Saida: {result.output_path}")
+    print(f"Tamanho original: {format_bytes(result.original_size_bytes)}")
+    print(f"Tamanho final: {format_bytes(result.output_size_bytes)}")
+    if result.size_reduction_percent >= 0:
+        print(f"Reducao: {result.size_reduction_percent:.2f}%")
+    else:
+        print(f"Aumento: {abs(result.size_reduction_percent):.2f}%")
     return 0
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -7,6 +8,22 @@ from tkinter import filedialog, messagebox, ttk
 
 from processor import FFmpegNotFoundError, VideoProcessingError, list_videos, process_video
 from profiles import PROFILES
+
+
+def format_bytes(size: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    value = float(size)
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.2f} {unit}"
+        value /= 1024.0
+    return f"{size} B"
+
+
+def format_size_change_label(percent: float) -> str:
+    if percent >= 0:
+        return f"Reducao: {percent:.2f}%"
+    return f"Aumento: {abs(percent):.2f}%"
 
 
 class VideoEditorApp:
@@ -62,6 +79,9 @@ class VideoEditorApp:
         )
         ttk.Button(settings_frame, text="Selecionar", command=self.choose_output_dir).grid(
             row=0, column=2, sticky="e"
+        )
+        ttk.Button(settings_frame, text="Ver pasta", command=self.open_output_dir).grid(
+            row=0, column=3, sticky="e", padx=(6, 0)
         )
 
         ttk.Label(settings_frame, text="Script/Perfil:").grid(row=1, column=0, sticky="w", pady=(8, 0))
@@ -140,6 +160,28 @@ class VideoEditorApp:
         selected = filedialog.askdirectory(title="Selecione a pasta de output")
         if selected:
             self.output_dir_var.set(selected)
+
+    def open_output_dir(self) -> None:
+        raw_output_dir = self.output_dir_var.get().strip()
+        if not raw_output_dir:
+            messagebox.showerror("Erro", "Selecione a pasta de output.")
+            return
+
+        output_path = Path(raw_output_dir)
+        try:
+            output_path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("Erro", f"Nao foi possivel criar a pasta: {exc}")
+            return
+
+        if not hasattr(os, "startfile"):
+            messagebox.showerror("Erro", "Este recurso requer Windows.")
+            return
+
+        try:
+            os.startfile(str(output_path.resolve()))  # type: ignore[attr-defined]
+        except OSError as exc:
+            messagebox.showerror("Erro", f"Nao foi possivel abrir a pasta: {exc}")
 
     def refresh_video_list(self) -> None:
         input_dir = self.input_dir_var.get().strip()
@@ -228,7 +270,15 @@ class VideoEditorApp:
                     overwrite=overwrite,
                 )
                 success_count += 1
-                self.root.after(0, lambda p=result.output_path: self._append_log(f"OK -> {p}"))
+                size_summary = (
+                    f"Original: {format_bytes(result.original_size_bytes)} | "
+                    f"Final: {format_bytes(result.output_size_bytes)} | "
+                    f"{format_size_change_label(result.size_reduction_percent)}"
+                )
+                self.root.after(
+                    0,
+                    lambda p=result.output_path, s=size_summary: self._append_log(f"OK -> {p} | {s}"),
+                )
             except (FFmpegNotFoundError, VideoProcessingError, FileNotFoundError, ValueError) as exc:
                 error_count += 1
                 self.root.after(0, lambda msg=str(exc): self._append_log(f"ERRO -> {msg}"))

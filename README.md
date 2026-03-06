@@ -52,7 +52,13 @@ Fluxo:
 3. Selecione os videos desejados.
 4. Escolha o script/perfil pronto.
 5. Defina a pasta de saida.
-6. Clique em `Executar`.
+6. Use `Ver pasta` para abrir rapidamente o output no Explorer.
+7. Clique em `Executar`.
+
+No log de execucao, cada video mostra:
+- tamanho original
+- tamanho final
+- percentual de reducao (ou aumento)
 
 ## Perfis de edicao
 

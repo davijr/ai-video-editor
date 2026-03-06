@@ -26,6 +26,9 @@ class ProcessResult:
     command: tuple[str, ...]
     stdout: str
     stderr: str
+    original_size_bytes: int
+    output_size_bytes: int
+    size_reduction_percent: float
 
 
 def find_ffmpeg_executable() -> str:
@@ -75,6 +78,7 @@ def process_video(
     profile = get_profile(profile_key)
     output_folder = Path(output_dir)
     output_file = build_output_path(input_file, output_folder, profile)
+    original_size_bytes = input_file.stat().st_size
     ffmpeg = find_ffmpeg_executable()
     overwrite_flag = "-y" if overwrite else "-n"
 
@@ -102,10 +106,21 @@ def process_video(
             f"Saida de erro:\n{completed.stderr.strip()}"
         )
 
+    if not output_file.exists() or not output_file.is_file():
+        raise VideoProcessingError("FFmpeg finalizou sem gerar arquivo de saida.")
+
+    output_size_bytes = output_file.stat().st_size
+    size_reduction_percent = 0.0
+    if original_size_bytes > 0:
+        size_reduction_percent = ((original_size_bytes - output_size_bytes) / original_size_bytes) * 100.0
+
     return ProcessResult(
         input_path=input_file,
         output_path=output_file,
         command=tuple(command),
         stdout=completed.stdout,
         stderr=completed.stderr,
+        original_size_bytes=original_size_bytes,
+        output_size_bytes=output_size_bytes,
+        size_reduction_percent=size_reduction_percent,
     )
