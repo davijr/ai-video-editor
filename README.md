@@ -149,6 +149,8 @@ Uso no app:
 - A aba `Processados` lista os processamentos com:
   - `Data/Hora`, `Modo`, `Original`, `Saida`
   - `Tam. Original`, `Tam. Final` e `Variacao` (reducao/aumento em percentual)
+  - `GPU` (CPU ou encoder usado), `Tempo` (tempo de cada processamento)
+  - `Tempo Colecao` (tempo acumulado quando o processamento foi em lote com varios videos)
 - Acoes da aba `Processados`:
   - `Recarregar historico`
   - `Tocar original` (abre/toca o arquivo original no player padrao do Windows)

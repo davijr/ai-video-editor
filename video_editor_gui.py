@@ -10,6 +10,7 @@ import ctypes
 from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
+import time
 from tkinter import filedialog, messagebox, ttk
 
 from processor import (
@@ -39,6 +40,14 @@ def format_size_change_label(percent: float) -> str:
     if percent >= 0:
         return f"Reducao: {percent:.2f}%"
     return f"Aumento: {abs(percent):.2f}%"
+
+
+def format_duration_label(seconds: float) -> str:
+    safe_seconds = max(0.0, float(seconds))
+    hours = int(safe_seconds // 3600)
+    minutes = int((safe_seconds % 3600) // 60)
+    secs = safe_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:05.2f}"
 
 
 def get_app_base_dir() -> Path:
@@ -350,6 +359,9 @@ class VideoEditorApp:
                 "original_size",
                 "output_size",
                 "change",
+                "gpu",
+                "processing_time",
+                "collection_time",
             ),
             show="headings",
             selectmode="browse",
@@ -362,14 +374,20 @@ class VideoEditorApp:
         self.processed_history_tree.heading("original_size", text="Tam. Original")
         self.processed_history_tree.heading("output_size", text="Tam. Final")
         self.processed_history_tree.heading("change", text="Variacao")
+        self.processed_history_tree.heading("gpu", text="GPU")
+        self.processed_history_tree.heading("processing_time", text="Tempo")
+        self.processed_history_tree.heading("collection_time", text="Tempo Colecao")
         self.processed_history_tree.column("index", width=45, minwidth=35, anchor="center", stretch=False)
         self.processed_history_tree.column("timestamp", width=155, minwidth=140, anchor="center", stretch=False)
-        self.processed_history_tree.column("mode", width=95, minwidth=85, anchor="center", stretch=False)
-        self.processed_history_tree.column("input_name", width=215, minwidth=160, anchor="w")
-        self.processed_history_tree.column("output_name", width=215, minwidth=160, anchor="w")
+        self.processed_history_tree.column("mode", width=85, minwidth=80, anchor="center", stretch=False)
+        self.processed_history_tree.column("input_name", width=170, minwidth=140, anchor="w")
+        self.processed_history_tree.column("output_name", width=170, minwidth=140, anchor="w")
         self.processed_history_tree.column("original_size", width=105, minwidth=95, anchor="e", stretch=False)
         self.processed_history_tree.column("output_size", width=95, minwidth=85, anchor="e", stretch=False)
         self.processed_history_tree.column("change", width=95, minwidth=85, anchor="center", stretch=False)
+        self.processed_history_tree.column("gpu", width=90, minwidth=80, anchor="center", stretch=False)
+        self.processed_history_tree.column("processing_time", width=95, minwidth=90, anchor="center", stretch=False)
+        self.processed_history_tree.column("collection_time", width=110, minwidth=100, anchor="center", stretch=False)
         self.processed_history_tree.grid(row=0, column=0, sticky="nsew")
 
         processed_scrollbar = ttk.Scrollbar(
@@ -378,7 +396,16 @@ class VideoEditorApp:
             command=self.processed_history_tree.yview,
         )
         processed_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.processed_history_tree.configure(yscrollcommand=processed_scrollbar.set)
+        processed_x_scrollbar = ttk.Scrollbar(
+            processed_tab,
+            orient="horizontal",
+            command=self.processed_history_tree.xview,
+        )
+        processed_x_scrollbar.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.processed_history_tree.configure(
+            yscrollcommand=processed_scrollbar.set,
+            xscrollcommand=processed_x_scrollbar.set,
+        )
 
         processed_controls = ttk.Frame(processed_tab, padding=(0, 6, 0, 0))
         processed_controls.grid(row=1, column=0, columnspan=2, sticky="ew")
@@ -666,6 +693,20 @@ class VideoEditorApp:
                 return None
         return None
 
+    @staticmethod
+    def _coerce_bool(value: object) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "sim", "yes", "y"}:
+                return True
+            if normalized in {"0", "false", "nao", "não", "no", "n"}:
+                return False
+        return None
+
     def _build_processed_history_record(
         self, entry: dict[str, object]
     ) -> dict[str, object] | None:
@@ -691,6 +732,13 @@ class VideoEditorApp:
             "original_size_bytes": self._coerce_int(entry.get("original_size_bytes")),
             "output_size_bytes": self._coerce_int(entry.get("output_size_bytes")),
             "size_reduction_percent": self._coerce_float(entry.get("size_reduction_percent")),
+            "use_gpu": self._coerce_bool(entry.get("use_gpu")),
+            "gpu_encoder": str(entry.get("gpu_encoder", "")).strip(),
+            "processing_seconds": self._coerce_float(entry.get("processing_seconds")),
+            "collection_elapsed_seconds": self._coerce_float(
+                entry.get("collection_elapsed_seconds")
+            ),
+            "batch_size": self._coerce_int(entry.get("batch_size")),
         }
 
     def _load_execution_history(self) -> None:
@@ -829,6 +877,26 @@ class VideoEditorApp:
             original_size_bytes = self._coerce_int(record.get("original_size_bytes"))
             output_size_bytes = self._coerce_int(record.get("output_size_bytes"))
             size_change = self._coerce_float(record.get("size_reduction_percent"))
+            use_gpu = self._coerce_bool(record.get("use_gpu"))
+            gpu_encoder_raw = record.get("gpu_encoder")
+            gpu_encoder = str(gpu_encoder_raw).strip() if gpu_encoder_raw is not None else ""
+            processing_seconds = self._coerce_float(record.get("processing_seconds"))
+            collection_elapsed_seconds = self._coerce_float(record.get("collection_elapsed_seconds"))
+            batch_size = self._coerce_int(record.get("batch_size")) or 1
+            if gpu_encoder:
+                gpu_label = gpu_encoder
+            elif use_gpu:
+                gpu_label = "Sim"
+            else:
+                gpu_label = "CPU"
+            if processing_seconds is None:
+                processing_label = "-"
+            else:
+                processing_label = format_duration_label(processing_seconds)
+            if collection_elapsed_seconds is not None and batch_size > 1:
+                collection_label = format_duration_label(collection_elapsed_seconds)
+            else:
+                collection_label = "-"
 
             values = (
                 index,
@@ -839,6 +907,9 @@ class VideoEditorApp:
                 format_bytes(original_size_bytes) if original_size_bytes is not None else "-",
                 format_bytes(output_size_bytes) if output_size_bytes is not None else "-",
                 format_size_change_label(size_change) if size_change is not None else "-",
+                gpu_label,
+                processing_label,
+                collection_label,
             )
             item_id = tree.insert("", "end", values=values)
             self.processed_history_row_map[item_id] = record
@@ -1470,6 +1541,7 @@ class VideoEditorApp:
         use_gpu: bool,
         gpu_encoder: str | None,
     ) -> None:
+        started_at = time.perf_counter()
         try:
             result = trim_video(
                 input_path=input_file,
@@ -1489,6 +1561,7 @@ class VideoEditorApp:
                 gpu_encoder=result.gpu_encoder,
                 error_message=None,
             )
+            processing_seconds = max(0.0, time.perf_counter() - started_at)
             history_entry.update(
                 {
                     "trim_start_seconds": trim_start_seconds,
@@ -1499,6 +1572,9 @@ class VideoEditorApp:
                     "original_size_bytes": result.original_size_bytes,
                     "output_size_bytes": result.output_size_bytes,
                     "size_reduction_percent": result.size_reduction_percent,
+                    "processing_seconds": processing_seconds,
+                    "collection_elapsed_seconds": processing_seconds,
+                    "batch_size": 1,
                 }
             )
             self._append_execution_history(history_entry)
@@ -1510,7 +1586,8 @@ class VideoEditorApp:
             )
             time_summary = (
                 f"Duracao original: {result.original_duration_seconds:.3f}s | "
-                f"Duracao final: {result.output_duration_seconds:.3f}s"
+                f"Duracao final: {result.output_duration_seconds:.3f}s | "
+                f"Tempo processamento: {format_duration_label(processing_seconds)}"
             )
             gpu_summary = (
                 f"GPU: {result.gpu_encoder}" if result.gpu_encoder else "GPU: CPU"
@@ -1532,11 +1609,15 @@ class VideoEditorApp:
                 gpu_encoder=gpu_encoder,
                 error_message=str(exc),
             )
+            processing_seconds = max(0.0, time.perf_counter() - started_at)
             history_entry.update(
                 {
                     "trim_start_seconds": trim_start_seconds,
                     "trim_end_seconds": trim_end_seconds,
                     "overwrite": overwrite,
+                    "processing_seconds": processing_seconds,
+                    "collection_elapsed_seconds": processing_seconds,
+                    "batch_size": 1,
                 }
             )
             self._append_execution_history(history_entry)
@@ -1751,6 +1832,9 @@ class VideoEditorApp:
     ) -> None:
         success_count = 0
         error_count = 0
+        batch_start = time.perf_counter()
+        collection_elapsed_seconds = 0.0
+        batch_size = len(selected_files)
 
         for index, input_file in enumerate(selected_files, start=1):
             self.root.after(
@@ -1759,6 +1843,7 @@ class VideoEditorApp:
                 )
             )
 
+            item_start = time.perf_counter()
             try:
                 result = process_video(
                     input_path=input_file,
@@ -1777,6 +1862,8 @@ class VideoEditorApp:
                     gpu_encoder=result.gpu_encoder,
                     error_message=None,
                 )
+                processing_seconds = max(0.0, time.perf_counter() - item_start)
+                collection_elapsed_seconds += processing_seconds
                 history_entry.update(
                     {
                         "profile_key": profile_key,
@@ -1784,6 +1871,9 @@ class VideoEditorApp:
                         "original_size_bytes": result.original_size_bytes,
                         "output_size_bytes": result.output_size_bytes,
                         "size_reduction_percent": result.size_reduction_percent,
+                        "processing_seconds": processing_seconds,
+                        "collection_elapsed_seconds": collection_elapsed_seconds,
+                        "batch_size": batch_size,
                     }
                 )
                 self._append_execution_history(history_entry)
@@ -1797,10 +1887,18 @@ class VideoEditorApp:
                 gpu_summary = (
                     f"GPU: {result.gpu_encoder}" if result.gpu_encoder else "GPU: CPU"
                 )
+                processing_summary = (
+                    f"Tempo: {format_duration_label(processing_seconds)}"
+                )
+                if batch_size > 1:
+                    processing_summary = (
+                        f"{processing_summary} | Tempo colecao: "
+                        f"{format_duration_label(collection_elapsed_seconds)}"
+                    )
                 self.root.after(
                     0,
-                    lambda p=result.output_path, s=size_summary, g=gpu_summary: self._append_log(
-                        f"OK -> {p} | {g} | {s}"
+                    lambda p=result.output_path, s=size_summary, g=gpu_summary, t=processing_summary: self._append_log(
+                        f"OK -> {p} | {g} | {t} | {s}"
                     ),
                 )
             except (FFmpegNotFoundError, VideoProcessingError, FileNotFoundError, ValueError) as exc:
@@ -1813,18 +1911,33 @@ class VideoEditorApp:
                     gpu_encoder=gpu_encoder,
                     error_message=str(exc),
                 )
+                processing_seconds = max(0.0, time.perf_counter() - item_start)
+                collection_elapsed_seconds += processing_seconds
                 history_entry.update(
                     {
                         "profile_key": profile_key,
                         "overwrite": overwrite,
+                        "processing_seconds": processing_seconds,
+                        "collection_elapsed_seconds": collection_elapsed_seconds,
+                        "batch_size": batch_size,
                     }
                 )
                 self._append_execution_history(history_entry)
                 error_count += 1
                 self.root.after(0, lambda msg=str(exc): self._append_log(f"ERRO -> {msg}"))
 
-        final_status = f"Concluido. Sucesso: {success_count} | Erros: {error_count}"
+        batch_total_seconds = max(0.0, time.perf_counter() - batch_start)
+        final_status = (
+            f"Concluido. Sucesso: {success_count} | Erros: {error_count} | "
+            f"Tempo total: {format_duration_label(batch_total_seconds)}"
+        )
         self.root.after(0, lambda: self.status_var.set(final_status))
+        self.root.after(
+            0,
+            lambda total=batch_total_seconds: self._append_log(
+                f"Tempo total da colecao: {format_duration_label(total)}"
+            ),
+        )
         self.root.after(0, lambda: self.run_button.configure(state="normal"))
 
     def _append_trim_log(self, message: str) -> None:
