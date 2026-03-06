@@ -21,3 +21,7 @@
 
 5. Produtividade
 - Priorizar recursos de execucao em background quando isso acelerar validacoes e build.
+
+6. Documentacao
+- Manter `README.md` e demais documentos do repositorio sincronizados com as features e correcoes implementadas.
+- Registrar limitacoes conhecidas e passos de troubleshooting quando houver mudancas de comportamento relevantes.

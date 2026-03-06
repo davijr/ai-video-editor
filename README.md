@@ -16,6 +16,10 @@ Documentacao oficial consultada:
 - FFmpeg encoders/codecs: https://ffmpeg.org/ffmpeg-codecs.html
 - Python Tkinter: https://docs.python.org/3/library/tkinter.html
 - PyInstaller: https://www.pyinstaller.org/en/stable/usage.html
+- WM_DROPFILES (Win32): https://learn.microsoft.com/en-us/windows/win32/shell/wm-dropfiles
+- DragAcceptFiles (Win32): https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-dragacceptfiles
+- SetWindowLongPtrW (Win32): https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw
+- CallWindowProcW (Win32): https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw
 
 ## Estrutura
 
@@ -66,6 +70,11 @@ Fluxo:
 9. Use `Ver pasta` para abrir rapidamente o output no Explorer.
 10. Clique em `Executar`.
 
+Indicador na tela:
+- `Fonte: pasta selecionada`
+- `Fonte: pasta (arrastar e soltar)`
+- `Fonte: lista de arquivos (arrastar e soltar)`
+
 A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas acoes:
 - selecionar entrada/output
 - atualizar lista
@@ -74,6 +83,20 @@ A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas a
 - executar processamento
 - criar atalho na area de trabalho
 - ativar/desativar GPU e atualizar deteccao de GPU
+
+## Arrastar e soltar (input)
+
+Comportamento suportado:
+- Soltar uma pasta: carrega videos da pasta.
+- Soltar varios videos: carrega somente os arquivos de video soltos.
+- Soltar um unico video: carrega 1 item na lista.
+- Itens nao reconhecidos como video sao ignorados e registrados no log.
+
+Observacoes importantes:
+- O recurso e Windows-only (implementado via API nativa de janela).
+- Se a aplicacao estiver em nivel de privilegio diferente do `explorer.exe` (ex.: app em modo Administrador e Explorer normal), o arrastar e soltar pode falhar por restricoes de UIPI.
+- Quando houver alteracao de codigo, gere novamente o executavel com `build_exe.bat` antes de retestar no `.exe`.
+- Se houver qualquer falha no drag-and-drop, o fluxo por botoes (`Selecionar` / `Atualizar lista`) continua suportado normalmente.
 
 ## Aceleracao por GPU
 
@@ -177,3 +200,4 @@ Observacoes:
 - O `ffmpeg` continua sendo necessario no Windows de destino (PATH ou pasta padrao).
 - Para criar atalho na area de trabalho, o caminho recomendado e apos gerar o `.exe`.
 - Se o `.exe` nao existir, a GUI cria atalho com fallback para `run_gui.bat`.
+- Sempre gere um novo `.exe` apos mudancas no codigo para validar comportamento atualizado.

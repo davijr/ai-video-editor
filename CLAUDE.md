@@ -11,3 +11,4 @@
    - gerar um mini relatorio de verificacao;
    - fazer commit e push no repositorio.
 6. Sempre que possivel, usar ferramentas de execucao em background para agilizar o desenvolvimento.
+7. Sempre manter a documentacao do repositorio atualizada junto com novas features, correcoes e limitacoes conhecidas.
