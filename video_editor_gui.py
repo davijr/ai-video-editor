@@ -254,12 +254,7 @@ class VideoEditorApp:
         ttk.Label(
             settings_frame,
             textvariable=self.gpu_status_var,
-        ).grid(row=3, column=1, columnspan=3, sticky="w", padx=6, pady=(2, 0))
-        ttk.Button(
-            settings_frame,
-            text="Atualizar GPU",
-            command=self._refresh_gpu_status,
-        ).grid(row=3, column=0, sticky="w", pady=(2, 0))
+        ).grid(row=3, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 0))
 
         list_controls = ttk.Frame(self.root, padding=(10, 0, 10, 0))
         list_controls.grid(row=2, column=0, sticky="ew")
@@ -477,10 +472,6 @@ class VideoEditorApp:
             label="Usar GPU (aceleracao)",
             variable=self.gpu_enabled_var,
         )
-        processamento_menu.add_command(
-            label="Atualizar deteccao de GPU",
-            command=self._refresh_gpu_status,
-        )
 
         perfil_menu = tk.Menu(processamento_menu, tearoff=0)
         for profile_label in self.profile_labels:
@@ -522,10 +513,6 @@ class VideoEditorApp:
         recorte_menu.add_checkbutton(
             label="Usar GPU (aceleracao)",
             variable=self.gpu_enabled_var,
-        )
-        recorte_menu.add_command(
-            label="Atualizar deteccao de GPU",
-            command=self._refresh_gpu_status,
         )
         recorte_menu.add_command(label="Executar recorte", command=self.run_trim)
         menu_bar.add_cascade(label="Recorte", menu=recorte_menu)

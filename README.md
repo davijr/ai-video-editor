@@ -82,7 +82,7 @@ A GUI possui tambem uma barra de menu com caminhos alternativos para as mesmas a
 - escolher perfil
 - executar processamento
 - criar atalho na area de trabalho
-- ativar/desativar GPU e atualizar deteccao de GPU
+- ativar/desativar GPU (deteccao automatica)
 
 ## Arrastar e soltar (input)
 
